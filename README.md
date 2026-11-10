@@ -17,6 +17,32 @@ accepted offers. Oson requires permitted live access; AI and card extraction wer
 this project cannot guarantee that browser session cookies resolve its block.
 No endpoints, prices or pharmacy offers are invented.
 
+## One-command launch on macOS / Linux
+
+Install Python 3.11+ first. Then:
+
+```bash
+git clone https://github.com/islomkhodjadev/crawler_dori.git
+cd crawler_dori
+bash run.sh
+```
+
+Open **http://127.0.0.1:8000**. The launcher creates `.venv` if needed, installs or
+updates the package, checks/downloads Chromium, and creates `.env` only if it does
+not exist. It preserves your API key, browser profiles and database. First launch
+needs internet access for installation. Stop with **Control+C**.
+
+To update an existing checkout and restart:
+
+```bash
+git pull --ff-only origin master
+bash run.sh
+```
+
+For another port: `bash run.sh --port 8001`. The executable form `./run.sh` also
+works. `bash run.sh --help` shows the available launcher options. Configure your
+OpenAI key and optional admin password in `.env`, then restart the app.
+
 ## Quick start
 
 Requires Python 3.11+ (tested on 3.12), and a supported Chromium system environment.

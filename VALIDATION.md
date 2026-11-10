@@ -58,3 +58,14 @@
 - Live OpenAI calls were not made: no API key is available in this cloud session.
   Oson live requests from the cloud remain WAF-blocked; fixtures reflect the
   supplied screenshot and do not claim live Oson DOM verification.
+
+## Shell launcher
+
+- `run.sh` passes Bash syntax validation and its help command.
+- A fresh virtual environment was created by the launcher; dependencies installed,
+  Chromium installation checked, `.env` created, and the server started on a custom
+  port. Admin HTML and `/api/health` both returned HTTP 200.
+- The launcher preserves an existing `.env` and data/profile directories, runs from
+  its own project directory, and forwards server arguments. Runtime validation was
+  performed on Linux; shell syntax is compatible with macOS Bash 3.2+, but this
+  cloud session did not execute on a Mac.
