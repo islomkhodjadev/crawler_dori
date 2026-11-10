@@ -40,3 +40,21 @@
 - Oson hard WAF denial remains unresolved. The panel supports showing it to a
   human; successful two-source collection is not claimed. Live OpenAI requests
   remain untested without an API key.
+
+## Shared AI assessment and Oson card fix
+
+- The reported Oson failure was a structured-data-only extractor, despite visible
+  prices. Oson now uses the observed `/search?q=` URL, AI extraction when enabled,
+  and visible-card / JSON-LD fallback without requiring structured data.
+- Both adapters share AI text + viewport-screenshot assessment: visible prices,
+  human verification, hard access denial, rate limits, no results, loading and
+  unknown layouts. Admin statuses distinguish these from extraction/AI errors.
+- 56 automated tests pass, including representative Oson cards (243,180 UZS),
+  avoiding neighboring-card price association, both-site assessment routing,
+  spacing-tolerant AI evidence checks, AI defaults and safe provider diagnostics.
+- Real Chromium fixture checks cover Oson card extraction, mocked AI extraction,
+  OpenAI-error fallback, actual-human-only pause and hard-deny classification.
+  Existing Chromium remote control and Arzon hydration fixtures pass.
+- Live OpenAI calls were not made: no API key is available in this cloud session.
+  Oson live requests from the cloud remain WAF-blocked; fixtures reflect the
+  supplied screenshot and do not claim live Oson DOM verification.

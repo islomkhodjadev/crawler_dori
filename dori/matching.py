@@ -42,7 +42,7 @@ def attributes(name):
     forms = sorted(key for key, pattern in FORMS.items() if re.search(pattern, s))
     for pattern in FORMS.values():
         clean = re.sub(pattern, ' ', clean)
-    clean = re.sub(r'\b(?:флак|назал|д/лица|д/тела)\b', ' ', clean)
+    clean = re.sub(r'\b(?:п/о|флак|назал|д/лица|д/тела)\b', ' ', clean)
     return dict(brand=norm(clean), pack=pack, measures=sorted(measures), forms=forms)
 
 
@@ -90,9 +90,9 @@ def match(product, offer):
         status = 'review'
     else:
         status = 'rejected'
-    if status == 'accepted' and offer.get('extraction') == 'ai_requires_review':
+    if status == 'accepted' and offer.get('extraction') in ('ai_requires_review','visible_card_requires_review'):
         status = 'review'
-        reasons.append('AI extraction requires human verification of product/price association')
+        reasons.append('Page extraction requires review of product/price association')
     return dict(status=status, score=score, reasons=conflicts + missing + reasons or ['name and package attributes agree'])
 
 

@@ -55,7 +55,7 @@ def test_connection_check_demands_real_prices():
         s=Session(crawler,SimpleNamespace(url='https://arzonapteka.uz/ru'))
         hub.sessions['arzon']=s
         result=await hub.check('arzon',item())
-        assert not result['ok'] and s.status=='needs_attention'
+        assert not result['ok'] and s.status=='no_results'
         assert not s.ready.is_set()
         async def prices(*args,**kwargs):
             return [{'price':123}], {'status':'ok'}

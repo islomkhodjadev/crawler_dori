@@ -95,19 +95,27 @@ class BrowserAdmin:
                 session.crawler.robots.clear()
                 offers, details = await session.crawler.search(site, product, page=session.page, use_ai=use_ai)
                 if not offers or details['status'] != 'ok':
-                    raise SourceError('Connection loaded, but no product prices were verified. Try another product.')
+                    from .adapters import NoResults
+                    raise NoResults('Search returned no priced products. Choose another test product; human verification is not required.')
                 session.status = 'connected'
                 session.checked_at = now()
                 session.checked_monotonic = time.monotonic()
-                session.message = f'Connection verified: {len(offers)} priced product listing(s) loaded.'
+                method=details.get('extraction_method','page_parser')
+                session.message = f'Connection verified: {len(offers)} priced listing(s) via {method}.'
+                if details.get('warning'):
+                    session.message += ' '+details['warning']
                 session.ready.set()
-                return {'ok': True, 'listings': len(offers), 'checked_at': session.checked_at}
+                return {'ok': True, 'listings': len(offers), 'checked_at': session.checked_at,
+                        'method':method,'warning':details.get('warning'),
+                        'preview':[{'name':o.get('name',''),'price':o.get('price'),'currency':o.get('currency','UZS')} for o in offers[:3]]}
             except Exception as exc:
-                session.status = 'needs_attention'
+                code=getattr(exc,'code','source_error')
+                session.status = 'needs_attention' if isinstance(exc,VerificationRequired) else code
                 session.message = str(exc)[:600]
                 session.checked_monotonic = 0
                 session.ready.clear()
-                return {'ok': False, 'error': session.message}
+                return {'ok': False, 'error': session.message, 'state':session.status,
+                        'human_required':isinstance(exc,VerificationRequired)}
             finally:
                 session.busy = False
 
@@ -126,6 +134,11 @@ class BrowserAdmin:
                 for offer in offers:
                     offer['location'] = 'Browser session region; verify selected city in the live viewer'
                 return offers, details
+            except SourceError as exc:
+                s.status='needs_attention' if isinstance(exc,VerificationRequired) else exc.code
+                s.message=str(exc)[:600]
+                s.checked_monotonic=0
+                raise
             finally:
                 s.busy = False
 

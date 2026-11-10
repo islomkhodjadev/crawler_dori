@@ -23,12 +23,12 @@ from .auth import AdminAuth
 class CrawlRequest(BaseModel):
     product_ids: list[int] = Field(min_length=1, max_length=5000)
     sites: list[str] = Field(default_factory=lambda: ['arzon', 'oson'], min_length=1, max_length=2)
-    use_ai: bool = False
+    use_ai: bool | None = None
 
 
 class ConnectionRequest(BaseModel):
     product_id: int
-    use_ai: bool = False
+    use_ai: bool | None = None
 
 
 class ReviewRequest(BaseModel):
@@ -88,6 +88,7 @@ def create_app(db_path=None):
     def health():
         import os
         return {'ok': True, 'ai_configured': bool(os.getenv('OPENAI_API_KEY')),
+                'ai_default_enabled': bool(os.getenv('OPENAI_API_KEY')),
                 'admin_password_set': bool(auth.password)}
 
     @app.post('/api/import')
@@ -123,7 +124,8 @@ def create_app(db_path=None):
     async def start(body: CrawlRequest):
         if not set(body.sites) <= {'arzon', 'oson'}:
             raise HTTPException(400, 'Supported sites: arzon, oson')
-        if body.use_ai and not os.getenv('OPENAI_API_KEY'):
+        use_ai = body.use_ai if body.use_ai is not None else bool(os.getenv('OPENAI_API_KEY'))
+        if use_ai and not os.getenv('OPENAI_API_KEY'):
             raise HTTPException(400, 'Configure OPENAI_API_KEY before enabling AI parsing')
         try:
             browsers.require_ready(body.sites)
@@ -137,7 +139,7 @@ def create_app(db_path=None):
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
         task = asyncio.create_task(crawl(store, run_id, products, tuple(dict.fromkeys(body.sites)),
-                                         admin=browsers, use_ai=body.use_ai))
+                                         admin=browsers, use_ai=use_ai))
         run_tasks[run_id] = task
         tasks.add(task)
         task.add_done_callback(tasks.discard)
@@ -162,13 +164,14 @@ def create_app(db_path=None):
     async def check_browser(site: str, body: ConnectionRequest):
         if site not in SITES:
             raise HTTPException(404, 'Unknown website')
-        if body.use_ai and not os.getenv('OPENAI_API_KEY'):
+        use_ai = body.use_ai if body.use_ai is not None else bool(os.getenv('OPENAI_API_KEY'))
+        if use_ai and not os.getenv('OPENAI_API_KEY'):
             raise HTTPException(400, 'Configure OPENAI_API_KEY to enable AI parsing')
         products = store.products([body.product_id])
         if not products:
             raise HTTPException(404, 'Select an imported product for the connection test')
         try:
-            return await browsers.check(site, products[0], use_ai=body.use_ai)
+            return await browsers.check(site, products[0], use_ai=use_ai)
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
 

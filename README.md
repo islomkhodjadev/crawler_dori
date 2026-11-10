@@ -9,11 +9,11 @@ An admin panel with Excel upload, embedded interactive Chromium browsers, connec
 | Source | Implementation | Live verification |
 | --- | --- | --- |
 | ArzonApteka | Chromium search and observed product-card parser | Passed: 8 Аквадетрим variants; 4000 МЕ capsules №30 matched at 53,400 UZS |
-| OsonApteka | Browser session, search-input handling, JSON-LD parser and optional AI visible-page parser | **Blocked by SafeLine WAF**, including robots.txt; live search/results markup remains unverified |
+| OsonApteka | Observed `/search?q=` navigation, AI text + screenshot assessment, visible-card and JSON-LD fallbacks | User screenshot shows accessible priced cards; matching HTML/Chromium fixtures pass. Cloud-side live verification remains blocked by WAF. |
 
 The app works with one accessible source and labels the estimate `single_source`.
 It does **not** claim a completed two-site comparison until both sources have
-accepted offers. Oson requires permitted live access and adapter verification;
+accepted offers. Oson requires permitted live access; AI and card extraction were validated with representative fixtures, while end-to-end local verification remains necessary;
 this project cannot guarantee that browser session cookies resolve its block.
 No endpoints, prices or pharmacy offers are invented.
 
@@ -140,8 +140,11 @@ DORI_HEADLESS=false
 A display is required for visible mode. Close other instances using the same
 profile before starting a crawl. Profiles contain cookies and are Git-ignored.
 Persistent sessions do not override a denied robots policy or a hard WAF denial.
-When Oson becomes accessible, verify its live search flow and result markup in
-`dori/adapters.py`; the JSON-LD parser and search selectors are provisional.
+Oson uses the `/search?q=` route observed in the user’s working browser. Its card
+parser groups each visible price with its nearest single-product title; JSON-LD
+is no longer required. AI assessment/extraction is preferred when enabled.
+The cloud executor still cannot validate the live Oson DOM, so the fallback card
+parser is tested against representative HTML and may need further site-specific tuning.
 If the operator provides a documented permitted API, add a dedicated adapter
 using its actual schema rather than guessing endpoints.
 
@@ -164,17 +167,16 @@ The UI exposes **AI attributes** only when a key is configured. It sends only th
 selected name and manufacturer after confirmation; suggestions are displayed and
 never automatically change product identity or prices.
 
-In the panel, select **Use AI when the page parser needs help** to enable AI fallback for both websites. The key stays on the server. The checkbox is disabled until a key is configured. For standalone CLI search pages which load but have no supported markup, explicitly enable:
+In the panel, **Use AI when the page parser needs help** is checked by default when `OPENAI_API_KEY` is configured; you can uncheck it. Oson uses AI as the primary extractor when enabled, and Arzon uses it when its known parser cannot read the loaded page. Both sites use AI to assess an apparent challenge before requesting human action. The key stays on the server. The checkbox is disabled until a key is configured. For standalone CLI search pages which load but have no supported markup, explicitly enable:
 
 ```dotenv
 OPENAI_PARSE_HTML=true
 ```
 
-This sends up to 24,000 characters of visible source-page text to OpenAI. A strict
+AI assessment sends up to 24,000 characters of visible source-page text and a viewport screenshot to OpenAI. The model distinguishes visible product prices, human verification, hard access denial, rate limits, no results, loading and unfamiliar pages. Human action is requested only for a verification step. A hard deny, missing results, parser failure or OpenAI configuration/quota error has a separate status. A strict
 schema constrains output; names, manufacturers, currency and price values must
 be present in the page. These checks cannot prove correct price-to-product
-association, so every AI-parsed candidate requires human review. AI cannot extract
-prices from a forbidden/challenge page. API charges and model availability depend
+association, so every AI-parsed candidate requires human review. AI cannot recover prices absent from the loaded page. If AI fails and a deterministic Oson card parser can read prices, the app collects them and shows the AI failure as a warning. AI price candidates are collected immediately but require product-match review before entering the estimate. Match review is not a website verification request. API charges and model availability depend
 on your OpenAI account. The live OpenAI integration was not exercised without a key.
 
 ## CLI and API
