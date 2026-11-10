@@ -21,3 +21,22 @@
 - GitHub repository creation and writing both returned permission errors. The user
   elected to download the ZIP and push to master themselves. No invoice, database,
   API key, browser session or uploaded workbook is included in the source package.
+
+## Embedded admin browser update
+
+- 31 automated tests pass, including admin login/session/logout, WebSocket origin
+  rejection, connection prerequisites, actual-price checks, expiry, browser input
+  locks, human-verification pause/resume, cancellation and restart recovery.
+- Real Chromium integration check (`PYTHONPATH=. python tests/browser_smoke.py`)
+  exercises a synthetic Allow button, mouse input, text and keyboard control, JPEG
+  frame streaming, disconnect cleanup and a delayed product-card hydration fixture.
+  This fixture does not claim to solve a real website's verification challenge.
+- Live panel test: imported the 243-product XLS, opened an embedded Arzon browser,
+  received JPEG frames over WebSocket, checked a real search returning eight
+  priced listings, and collected the matched 4000 МЕ №30 listing at 53,400 UZS.
+  Both-source gating was checked, then Arzon alone was explicitly selected for this
+  live collection because Oson access remains blocked. Desktop and mobile layout
+  checks passed with no JavaScript errors.
+- Oson hard WAF denial remains unresolved. The panel supports showing it to a
+  human; successful two-source collection is not claimed. Live OpenAI requests
+  remain untested without an API key.

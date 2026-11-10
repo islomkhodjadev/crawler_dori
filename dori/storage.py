@@ -75,7 +75,7 @@ class Store:
         with self.connect() as db:
             # Transaction prevents two requests from starting overlapping jobs.
             db.execute('BEGIN IMMEDIATE')
-            if db.execute("SELECT 1 FROM runs WHERE status IN ('queued','running')").fetchone():
+            if db.execute("SELECT 1 FROM runs WHERE status IN ('queued','running','waiting_for_human')").fetchone():
                 raise ValueError('A crawl is already queued or running')
             cursor = db.execute('INSERT INTO runs(started_at,status,total) VALUES (?,?,?)',
                                 (now(), 'queued', len(products)))
@@ -90,7 +90,7 @@ class Store:
 
     def recover(self):
         with self.connect() as db:
-            db.execute("UPDATE runs SET status='interrupted',finished_at=?,error='Process restarted; start a new crawl' WHERE status IN ('queued','running')", (now(),))
+            db.execute("UPDATE runs SET status='interrupted',finished_at=?,error='Process restarted; start a new crawl' WHERE status IN ('queued','running','waiting_for_human')", (now(),))
 
     def runs(self):
         with self.connect() as db:

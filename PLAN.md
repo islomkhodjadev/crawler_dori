@@ -29,3 +29,12 @@ The supplied workbook is a business invoice. Keep it and the database out of Git
 particularly because the supplied GitHub repository is public. Use synthetic test
 fixtures. Start with a small crawl; full-sheet crawl is a user-triggered action.
 Future forecasting requires repeated dated observations and is outside this version.
+
+## Admin browser workflow
+
+Implemented Excel upload → embedded per-site Chromium session → human verification
+→ real-price connection check → collection using the same session. Verification
+interruptions pause and resume the current product; cancellation retains earlier
+results. Added one-admin password sessions, WebSocket origin checks, separate
+persistent browser profiles, optional AI fallback on both sources and setup docs.
+Oson live access remains a prerequisite for validating its extraction adapter.

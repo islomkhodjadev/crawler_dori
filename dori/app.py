@@ -1,4 +1,5 @@
 import asyncio
+import os
 import csv
 import io
 from contextlib import asynccontextmanager
@@ -7,7 +8,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -15,11 +16,19 @@ from pydantic import BaseModel, Field
 from .importer import read_products
 from .service import crawl
 from .storage import Store
+from .browser_admin import BrowserAdmin, SITES
+from .auth import AdminAuth
 
 
 class CrawlRequest(BaseModel):
     product_ids: list[int] = Field(min_length=1, max_length=5000)
     sites: list[str] = Field(default_factory=lambda: ['arzon', 'oson'], min_length=1, max_length=2)
+    use_ai: bool = False
+
+
+class ConnectionRequest(BaseModel):
+    product_id: int
+    use_ai: bool = False
 
 
 class ReviewRequest(BaseModel):
@@ -39,6 +48,9 @@ class ProductRequest(BaseModel):
 def create_app(db_path=None):
     store = Store(db_path)
     tasks = set()
+    run_tasks = {}
+    browsers = BrowserAdmin()
+    auth = AdminAuth()
 
     @asynccontextmanager
     async def lifespan(app):
@@ -48,9 +60,12 @@ def create_app(db_path=None):
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        await browsers.close()
 
     app = FastAPI(title='Dori · Pharmacy price comparison', lifespan=lifespan)
     app.state.store = store
+    app.state.browsers = browsers
+    auth.install(app)
 
     @app.middleware('http')
     async def local_origin(request: Request, call_next):
@@ -72,7 +87,8 @@ def create_app(db_path=None):
     @app.get('/api/health')
     def health():
         import os
-        return {'ok': True, 'ai_configured': bool(os.getenv('OPENAI_API_KEY'))}
+        return {'ok': True, 'ai_configured': bool(os.getenv('OPENAI_API_KEY')),
+                'admin_password_set': bool(auth.password)}
 
     @app.post('/api/import')
     async def upload(file: UploadFile = File(...)):
@@ -107,6 +123,12 @@ def create_app(db_path=None):
     async def start(body: CrawlRequest):
         if not set(body.sites) <= {'arzon', 'oson'}:
             raise HTTPException(400, 'Supported sites: arzon, oson')
+        if body.use_ai and not os.getenv('OPENAI_API_KEY'):
+            raise HTTPException(400, 'Configure OPENAI_API_KEY before enabling AI parsing')
+        try:
+            browsers.require_ready(body.sites)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
         products = store.products(list(set(body.product_ids)))
         if len(products) != len(set(body.product_ids)):
             raise HTTPException(404, 'Some products do not exist')
@@ -114,10 +136,62 @@ def create_app(db_path=None):
             run_id = store.create_run(products)
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
-        task = asyncio.create_task(crawl(store, run_id, products, tuple(dict.fromkeys(body.sites))))
+        task = asyncio.create_task(crawl(store, run_id, products, tuple(dict.fromkeys(body.sites)),
+                                         admin=browsers, use_ai=body.use_ai))
+        run_tasks[run_id] = task
         tasks.add(task)
         task.add_done_callback(tasks.discard)
+        task.add_done_callback(lambda _: run_tasks.pop(run_id, None))
         return {'run_id': run_id}
+
+    @app.get('/api/browsers')
+    async def browser_status():
+        return browsers.state()
+
+    @app.post('/api/browsers/{site}/open')
+    async def open_browser(site: str):
+        try:
+            await browsers.open(site)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(503, 'Chromium could not start: ' + type(exc).__name__ + '. Run python -m playwright install chromium.') from exc
+        return browsers.state()[site]
+
+    @app.post('/api/browsers/{site}/check')
+    async def check_browser(site: str, body: ConnectionRequest):
+        if site not in SITES:
+            raise HTTPException(404, 'Unknown website')
+        if body.use_ai and not os.getenv('OPENAI_API_KEY'):
+            raise HTTPException(400, 'Configure OPENAI_API_KEY to enable AI parsing')
+        products = store.products([body.product_id])
+        if not products:
+            raise HTTPException(404, 'Select an imported product for the connection test')
+        try:
+            return await browsers.check(site, products[0], use_ai=body.use_ai)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.websocket('/api/browsers/{site}/stream')
+    async def browser_stream(websocket: WebSocket, site: str):
+        from urllib.parse import urlparse
+        origin = websocket.headers.get('origin', '')
+        if (not origin or urlparse(origin).netloc != websocket.headers.get('host')
+                or not auth.authorized(websocket.cookies) or site not in SITES):
+            await websocket.close(code=1008)
+            return
+        await browsers.stream(websocket, site)
+
+    @app.post('/api/runs/{run_id}/cancel')
+    async def cancel(run_id: int):
+        task = run_tasks.get(run_id)
+        if not task:
+            raise HTTPException(404, 'Active run not found')
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        from .adapters import now
+        store.update_run(run_id, status='interrupted', finished_at=now(), error='Collection cancelled by admin')
+        return {'ok': True}
 
     @app.get('/api/report')
     def report(run_id: int | None = None):

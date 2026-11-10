@@ -2,7 +2,7 @@
 
 Python + Chromium + FastAPI + SQLite. Import an invoice, find matching medicine
 packages, compare observed prices and estimate **current market price** in UZS.
-A local web interface, CLI, CSV export and optional OpenAI parsing are included.
+An admin panel with Excel upload, embedded interactive Chromium browsers, connection checks, human-verification pause/resume, CLI, CSV export and optional OpenAI parsing is included.
 
 ## Current source status (10 November 2026)
 
@@ -38,12 +38,43 @@ Open **http://127.0.0.1:8000**. On Linux, if browser libraries are missing, inst
 Playwright's documented OS dependencies (`python -m playwright install-deps chromium`)
 using your machine's administrator/package-management process.
 
-1. Import your `.xls`, `.xlsx` or UTF-8 `.csv` workbook.
-2. The first five products are selected for an initial small crawl; change selection
-   as needed and click **Crawl selected**.
-3. Inspect source failures and candidate attributes. Review uncertain candidates
-   against source pages before accepting them.
-4. View per-site prices and market estimate, then export CSV.
+1. Import your `.xls`, `.xlsx` or UTF-8 `.csv` workbook. The first five products are selected for a small initial crawl.
+2. In **Browser connections**, choose an imported product for the connection test.
+3. Click **Open browser & verify** for each website. A live Chromium viewport opens inside the admin panel. Click and type directly in it to complete verification, choose the city, or accept consent when the website offers those controls. Use the text field beneath the viewer if direct typing is inconvenient.
+4. Click **Check connection**. It uses that same browser session to search the test product and verify real priced listings. A loaded homepage alone does not pass. If a product has no results, choose another test product.
+5. Once both sources are connected, select your product rows and click **Start collecting prices**. You can explicitly deselect an unavailable source to collect from one website; resulting estimates are labeled single-source.
+6. If a site presents verification during a run, the run enters **waiting for human**. Open its browser, complete verification, then **Check connection** to resume the same product. **Cancel collection** preserves results collected so far.
+7. Review uncertain matches and export the price comparison as CSV.
+
+Connection checks expire after 15 minutes before a new collection starts. Sessions
+and cookies persist in separate local profiles per website; the running browser is
+reused by the collector. While collection controls a site, human input is disabled
+until a verification pause. One interactive controller is allowed per website.
+
+## Admin login and deployment
+
+For password-protected access, set a strong password in your local `.env` and restart:
+
+```dotenv
+DORI_ADMIN_PASSWORD=choose_a_long_unique_password
+DORI_ADMIN_PROFILES=data/browser-profiles
+```
+
+Sign in at `/login`; the session lasts eight hours. Without a configured password,
+the panel is intended only for a trusted local machine using its default loopback
+binding. Do not expose the server publicly without setting a password and HTTPS.
+Browser cookies and profiles are private and must not be committed.
+
+The embedded browser uses same-origin WebSockets (`/api/browsers/{site}/stream`),
+JPEG viewport frames, and validated mouse/keyboard commands. No VNC installation,
+external remote-desktop provider or exposed Chromium debugging port is needed.
+A reverse proxy must forward WebSocket Upgrade/Connection headers and preserve
+the external Host/Origin. Configure trusted forwarded HTTPS headers so login cookies
+are marked Secure. Run one application worker per database/browser-profile set.
+
+A website's hard deny or lack of an accessible product parser can still prevent a
+successful check. There is no universal “Allow” button. This workflow supports
+human verification offered by the website; it does not guarantee Oson WAF access.
 
 Invoice headers may start below company details and merged cells. The supplied
 workbook was verified to import **243 products**. Repeated imports append a new
@@ -133,7 +164,7 @@ The UI exposes **AI attributes** only when a key is configured. It sends only th
 selected name and manufacturer after confirmation; suggestions are displayed and
 never automatically change product identity or prices.
 
-For Oson search pages which load but have no supported JSON-LD, explicitly enable:
+In the panel, select **Use AI when the page parser needs help** to enable AI fallback for both websites. The key stays on the server. The checkbox is disabled until a key is configured. For standalone CLI search pages which load but have no supported markup, explicitly enable:
 
 ```dotenv
 OPENAI_PARSE_HTML=true
@@ -156,9 +187,11 @@ dori report --run-id 1
 ```
 
 JSON output includes source errors and candidate decisions. `dori serve` uses a
-single process and local binding. API documentation: http://127.0.0.1:8000/docs.
-Principal routes: `/api/import`, `/api/products`, `/api/crawl`, `/api/runs`,
-`/api/report`, `/api/offers/{id}/review`, `/api/export`.
+single process and local binding. The admin crawl API requires checked interactive
+browser sessions; CLI batch crawling remains an independent noninteractive path. API documentation: http://127.0.0.1:8000/docs.
+Principal routes: `/api/import`, `/api/products`, `/api/browsers`,
+`/api/browsers/{site}/open`, `/api/browsers/{site}/check`, `/api/crawl`,
+`/api/runs`, `/api/runs/{id}/cancel`, `/api/report`, `/api/offers/{id}/review`, `/api/export`.
 
 SQLite lives in `data/dori.sqlite3` (`DORI_DB` can override). Back up the entire
 SQLite database, including WAL files when a process is running. The web app marks
@@ -166,8 +199,7 @@ unfinished runs interrupted after restart. If a standalone CLI crawl is forcibly
 killed, start the web app once to recover its queued/running state before retrying.
 Do not run multiple servers/CLI crawls against the same browser profile/database.
 
-The server has no account authentication and is designed for your local machine.
-Add authentication and deployment controls before exposing it to a network.
+The panel supports one administrator password with in-memory signed-in sessions. It does not implement multiple administrator accounts or team-level roles. Use the deployment guidance above before sharing access.
 
 ## Tests
 

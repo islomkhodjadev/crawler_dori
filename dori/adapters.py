@@ -16,6 +16,10 @@ class SourceError(RuntimeError):
     pass
 
 
+class VerificationRequired(SourceError):
+    """A browser session requires a person before automation can continue."""
+
+
 def now():
     return datetime.now(timezone.utc).isoformat()
 
@@ -107,7 +111,9 @@ def parse_oson_jsonld(html, page_url):
 
 
 class BrowserCrawler:
-    def __init__(self):
+    def __init__(self, profile=None, interactive=False):
+        self.profile = profile
+        self.interactive = interactive
         self.delay = max(2, float(os.getenv('CRAWL_DELAY_SECONDS', '3')))
         self.max_pages = max(1, min(10, int(os.getenv('CRAWL_MAX_PAGES', '3'))))
         self.robots = {}
@@ -120,7 +126,7 @@ class BrowserCrawler:
             options['proxy'] = {'server': os.environ['DORI_BROWSER_PROXY']}
         try:
             options['headless'] = os.getenv('DORI_HEADLESS', 'true').lower() != 'false'
-            profile = os.getenv('DORI_BROWSER_PROFILE')
+            profile = self.profile or os.getenv('DORI_BROWSER_PROFILE')
             if profile:
                 self.context = await self.playwright.chromium.launch_persistent_context(profile, locale='ru-RU', **options)
                 self.browser = None
@@ -131,8 +137,9 @@ class BrowserCrawler:
             await self.playwright.stop()
             raise
         # Retain ordinary browser navigation/session handling, remove expensive assets.
-        await self.context.route('**/*', lambda route: route.abort() if route.request.resource_type in
-                                 ('image', 'media', 'font') else route.continue_())
+        if not self.interactive:
+            await self.context.route('**/*', lambda route: route.abort() if route.request.resource_type in
+                                     ('image', 'media', 'font') else route.continue_())
         return self
 
     async def __aexit__(self, *exc):
@@ -153,7 +160,7 @@ class BrowserCrawler:
                     if response.status_code == 404:
                         content = ''
                     elif response.status_code != 200 or '<html' in response.text.lower() or '<!doctype' in response.text.lower():
-                        raise SourceError('robots.txt inaccessible or challenged; cannot verify crawl permission')
+                        raise VerificationRequired('robots.txt inaccessible or challenged; cannot verify crawl permission')
                     else:
                         content = response.text
                 except httpx.HTTPError as exc:
@@ -180,27 +187,38 @@ class BrowserCrawler:
             await asyncio.sleep(delay * 2)
             self.last_request[host] = loop.time()
         if response and response.status in (401, 403, 429):
-            raise SourceError(f'HTTP {response.status}: source blocked or rate limited')
+            raise VerificationRequired(f'HTTP {response.status}: source blocked or rate limited')
         body = (await page.locator('body').inner_text()).casefold()
         if any(t in body for t in ('access forbidden', 'security detection', 'verify you are human', 'captcha')):
-            raise SourceError('Source access challenge; no bypass attempted')
+            raise VerificationRequired('Source access challenge; human verification required')
         if response and response.status >= 400:
             raise SourceError(f'HTTP {response.status}')
 
-    async def search(self, site, product):
+    async def search(self, site, product, page=None, use_ai=None):
         from .matching import search_term
-        page = await self.context.new_page()
+        if use_ai is None:
+            use_ai = os.getenv('OPENAI_PARSE_HTML', 'false').lower() == 'true'
+        own_page = page is None
+        page = page or await self.context.new_page()
         try:
             if site == 'arzon':
                 params = {'barcode': product['barcode']} if product.get('barcode') else {'q': search_term(product)}
                 url = 'https://arzonapteka.uz/ru/search?' + urlencode(params)
                 await self.navigate(page, url)
                 try:
-                    await page.wait_for_selector('article[data-product-card]', timeout=15000)
+                    await page.wait_for_function("""() => [...document.querySelectorAll('article[data-product-card]')].some(card =>
+                        card.querySelector('a[href*=\"/products/\"][aria-label]') && /[0-9][0-9\\s.,]*\\s*(?:с[ўу]м|UZS)/i.test(card.innerText))""", timeout=20000)
                 except Exception:
                     body = (await page.locator('body').inner_text()).casefold()
                     if any(t in body for t in ('ничего не найдено', 'не нашли', 'нет результатов', 'ничего не нашли')):
                         return [], {'status': 'no_results', 'url': page.url, 'pages': 1}
+                    if any(t in body for t in ('access forbidden', 'security detection', 'verify you are human', 'captcha')):
+                        raise VerificationRequired('Website verification required')
+                    if use_ai:
+                        from .ai import parse_visible_offers
+                        ai_offers = await parse_visible_offers(await page.locator('body').inner_text(), page.url, site)
+                        if ai_offers:
+                            return ai_offers, {'status':'ok','url':page.url,'pages':1,'scope':'AI-parsed visible prices; manual review required'}
                     raise SourceError('Search cards not found; page may be blocked or markup changed')
                 offers, visited, pages = [], set(), 0
                 for _ in range(self.max_pages):
@@ -215,6 +233,9 @@ class BrowserCrawler:
                     if next_url in visited or urlparse(next_url).hostname != 'arzonapteka.uz':
                         break
                     await self.navigate(page, next_url)
+                if not offers and use_ai:
+                    from .ai import parse_visible_offers
+                    offers = await parse_visible_offers(await page.locator('body').inner_text(), page.url, site)
                 if not offers:
                     raise SourceError('Cards found but no verifiable UZS prices parsed')
                 offers = list({(o['url'], o['price']): o for o in offers}.values())
@@ -223,7 +244,13 @@ class BrowserCrawler:
             if site != 'oson':
                 raise ValueError('Unknown site')
             url = 'https://osonapteka.uz/'
-            await self.navigate(page, url)
+            if own_page or urlparse(page.url).hostname != 'osonapteka.uz':
+                await self.navigate(page, url)
+            else:
+                await self.allowed(page.url)
+            body = (await page.locator('body').inner_text()).casefold()
+            if any(t in body for t in ('access forbidden', 'security detection', 'verify you are human', 'captcha')):
+                raise VerificationRequired('Website verification required')
             search = page.locator('input[type="search"], input[placeholder*="поиск"], input[placeholder*="вводить"]').first
             if not await search.count():
                 raise SourceError('Oson search input unavailable; live markup not verified')
@@ -232,11 +259,12 @@ class BrowserCrawler:
             await page.wait_for_timeout(3000)
             await self.allowed(page.url)
             offers = parse_oson_jsonld(await page.content(), page.url)
-            if not offers and os.getenv('OPENAI_PARSE_HTML', 'false').lower() == 'true':
+            if not offers and use_ai:
                 from .ai import parse_visible_offers
                 offers = await parse_visible_offers(await page.locator('body').inner_text(), page.url, 'oson')
             if not offers:
                 raise SourceError('Oson search has no supported structured offers; adapter needs live access verification')
             return offers, {'status': 'ok', 'url': page.url, 'pages': 1, 'scope': 'Structured UZS offers'}
         finally:
-            await page.close()
+            if own_page:
+                await page.close()
