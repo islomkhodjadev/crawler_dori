@@ -103,3 +103,28 @@ def search_term(product):
     name = product['name']
     parts = re.split(r'\b(?:таб|капс|спрей|крем|гель|капли|сироп|мазь|р-р|раствор)\b|\d', name, maxsplit=1, flags=re.I)
     return parts[0].strip(' ,.-') or name.split()[0]
+
+
+def summarize_matches(offers, sources):
+    from collections import Counter
+    per_site={}
+    notes=[]
+    for site in dict.fromkeys([*sources,*[o['site'] for o in offers]]):
+        listings=[o for o in offers if o['site']==site]
+        counts={status:sum(o['match_status']==status for o in listings) for status in ('accepted','review','rejected')}
+        counts['candidates']=len(listings)
+        per_site[site]=counts
+        message=f"{site}: {len(listings)} listings, {counts['accepted']} accepted, {counts['review']} review, {counts['rejected']} rejected"
+        if counts['accepted']==0:
+            reasons=Counter(reason for o in listings for reason in o.get('reasons',[]))
+            if reasons:message+=' ('+'; '.join(reason for reason,_ in reasons.most_common(3))+')'
+            elif sources.get(site,{}).get('error'):message+=' ('+sources[site]['error']+')'
+        notes.append(message)
+    accepted=sum(c['accepted'] for c in per_site.values())
+    review=sum(c['review'] for c in per_site.values())
+    if accepted:status='matched'
+    elif review:status='needs_review'
+    elif offers:status='rejected'
+    elif any(s.get('status')=='error' for s in sources.values()):status='source_error'
+    else:status='no_candidates'
+    return {'status':status,'per_site':per_site,'notes':' | '.join(notes)}

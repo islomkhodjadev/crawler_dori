@@ -69,3 +69,14 @@
   its own project directory, and forwards server arguments. Runtime validation was
   performed on Linux; shell syntax is compatible with macOS Bash 3.2+, but this
   cloud session did not execute on a Mac.
+
+## Progress, statistics and export transparency
+
+- 61 automated tests pass. Added product-versus-listing counting, per-source `ok`
+  versus accepted-match distinctions, active product/site, manual-review counter
+  updates, run isolation, empty state and non-destructive legacy database migration.
+- Main CSV now explains blank prices with source-level candidate/review/rejection
+  counts and reasons. Listing-level CSV retains the raw prices and decisions.
+- Chromium UI checks cover desktop/mobile statistics, progress percentage, current
+  product/site, match-status filtering and immediate count updates after review.
+  These checks use synthetic records, not the user's invoice or business prices.

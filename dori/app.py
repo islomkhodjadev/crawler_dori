@@ -135,7 +135,7 @@ def create_app(db_path=None):
         if len(products) != len(set(body.product_ids)):
             raise HTTPException(404, 'Some products do not exist')
         try:
-            run_id = store.create_run(products)
+            run_id = store.create_run(products, sites=body.sites)
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
         task = asyncio.create_task(crawl(store, run_id, products, tuple(dict.fromkeys(body.sites)),
@@ -193,8 +193,12 @@ def create_app(db_path=None):
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         from .adapters import now
-        store.update_run(run_id, status='interrupted', finished_at=now(), error='Collection cancelled by admin')
+        store.update_run(run_id, status='interrupted', finished_at=now(), active_product_id=None, active_site=None, phase='Cancelled', error='Collection cancelled by admin')
         return {'ok': True}
+
+    @app.get('/api/statistics')
+    def statistics(run_id: int | None = None):
+        return store.statistics(run_id)
 
     @app.get('/api/report')
     def report(run_id: int | None = None):
@@ -230,16 +234,38 @@ def create_app(db_path=None):
         out = io.StringIO()
         writer = csv.writer(out)
         writer.writerow(['product_id','name','manufacturer','invoice_price','arzon_price','oson_price',
-                         'estimate_uzs','estimate_status','invoice_delta_percent','arzon_status','oson_status','sources'])
+                         'estimate_uzs','estimate_status','invoice_delta_percent','arzon_status','oson_status','sources',
+                         'match_status','arzon_candidates','arzon_accepted','arzon_review','arzon_rejected',
+                         'oson_candidates','oson_accepted','oson_review','oson_rejected','match_notes'])
         for entry in report['products']:
             p, e = entry['product'], entry['estimate']
             row = [p['id'], p['name'], p['manufacturer'], p.get('invoice_price'), e['per_site'].get('arzon'),
                    e['per_site'].get('oson'), e['value'], e['status'], e['invoice_delta_percent'],
                    entry['sources'].get('arzon', {}).get('status'), entry['sources'].get('oson', {}).get('status'),
                    ' | '.join(o['url'] for o in entry['offers'] if o['match_status'] == 'accepted')]
+            summary=entry['matching']
+            row.append(summary['status'])
+            for site in ('arzon','oson'):
+                row.extend(summary['per_site'].get(site,{}).get(key,0) for key in ('candidates','accepted','review','rejected'))
+            row.append(summary['notes'])
             # Prevent spreadsheet formula execution from untrusted names/manufacturers.
             writer.writerow(["'" + v if isinstance(v, str) and v.lstrip().startswith(('=', '+', '-', '@')) else v for v in row])
         return Response('\ufeff' + out.getvalue(), media_type='text/csv; charset=utf-8',
                         headers={'Content-Disposition': 'attachment; filename="dori-prices.csv"'})
+
+    @app.get('/api/export/candidates')
+    def export_candidates(run_id: int | None = None):
+        out=io.StringIO()
+        writer=csv.writer(out)
+        writer.writerow(['product_id','input_name','site','listing_id','listing_name','manufacturer','price_uzs',
+                         'match_status','name_score','reasons','observed_at','source_url','reviewed_at'])
+        for entry in store.report(run_id)['products']:
+            for offer in entry['offers']:
+                row=[entry['product']['id'],entry['product']['name'],offer['site'],offer['id'],offer['name'],
+                     offer.get('manufacturer',''),offer['price'],offer['match_status'],offer['score'],
+                     ' | '.join(offer['reasons']),offer.get('observed_at',''),offer['url'],offer.get('reviewed_at','')]
+                writer.writerow(["'"+v if isinstance(v,str) and v.lstrip().startswith(('=','+','-','@')) else v for v in row])
+        return Response('\ufeff'+out.getvalue(),media_type='text/csv; charset=utf-8',
+                        headers={'Content-Disposition':'attachment; filename="dori-candidates.csv"'})
 
     return app

@@ -14,7 +14,8 @@ CREATE TABLE IF NOT EXISTS products (
 CREATE TABLE IF NOT EXISTS runs (
  id INTEGER PRIMARY KEY, started_at TEXT NOT NULL, finished_at TEXT,
  status TEXT NOT NULL, total INTEGER NOT NULL, completed INTEGER NOT NULL DEFAULT 0,
- error TEXT
+ error TEXT, active_product_id INTEGER, active_site TEXT, phase TEXT,
+ last_activity TEXT, sites TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS results (
  id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL REFERENCES runs(id),
@@ -37,6 +38,11 @@ class Store:
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
             db.executescript(SCHEMA)
+            existing={row['name'] for row in db.execute('PRAGMA table_info(runs)')}
+            for name, declaration in {'active_product_id':'INTEGER','active_site':'TEXT','phase':'TEXT',
+                                      'last_activity':'TEXT','sites':"TEXT NOT NULL DEFAULT '[]'"}.items():
+                if name not in existing:
+                    db.execute(f'ALTER TABLE runs ADD COLUMN {name} {declaration}')
 
     @contextmanager
     def connect(self):
@@ -71,26 +77,27 @@ class Store:
                 rows = db.execute('SELECT * FROM products WHERE id IN (' + ','.join('?' for _ in ids) + ') ORDER BY id', ids).fetchall()
         return [dict(id=r['id'], batch=r['batch'], **json.loads(r['data'])) for r in rows]
 
-    def create_run(self, products):
+    def create_run(self, products, sites=None):
         with self.connect() as db:
             # Transaction prevents two requests from starting overlapping jobs.
             db.execute('BEGIN IMMEDIATE')
             if db.execute("SELECT 1 FROM runs WHERE status IN ('queued','running','waiting_for_human')").fetchone():
                 raise ValueError('A crawl is already queued or running')
-            cursor = db.execute('INSERT INTO runs(started_at,status,total) VALUES (?,?,?)',
-                                (now(), 'queued', len(products)))
+            cursor = db.execute('INSERT INTO runs(started_at,status,total,last_activity,phase,sites) VALUES (?,?,?,?,?,?)',
+                                (now(), 'queued', len(products), now(), 'Queued', json.dumps(list(sites or []))))
             return cursor.lastrowid
 
     def update_run(self, run_id, **changes):
-        if not changes or not set(changes) <= {'status','completed','finished_at','error'}:
+        if not changes or not set(changes) <= {'status','completed','finished_at','error','active_product_id','active_site','phase','last_activity','sites'}:
             raise ValueError('Invalid run update')
+        changes.setdefault('last_activity',now())
         with self.connect() as db:
             db.execute('UPDATE runs SET ' + ','.join(f'{key}=?' for key in changes) + ' WHERE id=?',
                        [*changes.values(), run_id])
 
     def recover(self):
         with self.connect() as db:
-            db.execute("UPDATE runs SET status='interrupted',finished_at=?,error='Process restarted; start a new crawl' WHERE status IN ('queued','running','waiting_for_human')", (now(),))
+            db.execute("UPDATE runs SET status='interrupted',finished_at=?,active_product_id=NULL,active_site=NULL,phase='Interrupted by restart',error='Process restarted; start a new crawl' WHERE status IN ('queued','running','waiting_for_human')", (now(),))
 
     def runs(self):
         with self.connect() as db:
@@ -140,5 +147,81 @@ class Store:
         result = []
         for entry in grouped.values():
             entry['estimate'] = estimate(entry['offers'], entry['product'].get('invoice_price'))
+            from .matching import summarize_matches
+            entry['matching']=summarize_matches(entry['offers'],entry['sources'])
             result.append(entry)
         return {'run_id': run_id, 'products': result}
+
+    def statistics(self, run_id=None):
+        """Count product coverage separately from candidate-listing decisions."""
+        from datetime import datetime, timezone
+        with self.connect() as db:
+            db.execute('BEGIN')  # One consistent snapshot while the crawler writes.
+            imported=db.execute('SELECT count(*) FROM products').fetchone()[0]
+            if run_id is None:
+                run_id=db.execute('SELECT max(id) FROM runs').fetchone()[0]
+            row=db.execute('SELECT * FROM runs WHERE id=?',(run_id,)).fetchone()
+            run=dict(row) if row else None
+            candidate_rows=db.execute('''SELECT o.match_status,r.product_id,r.site
+                FROM offers o JOIN results r ON r.id=o.result_id WHERE r.run_id=?''',(run_id,)).fetchall()
+            results=[dict(r) for r in db.execute('SELECT * FROM results WHERE run_id=? ORDER BY id',(run_id,))]
+            active=None
+            if run and run['active_product_id']:
+                p=db.execute('SELECT data FROM products WHERE id=?',(run['active_product_id'],)).fetchone()
+                if p:active={'id':run['active_product_id'],'name':json.loads(p['data'])['name'],'site':run['active_site']}
+            names={r['id']:json.loads(r['data'])['name'] for r in db.execute('''SELECT p.id,p.data FROM products p
+                WHERE p.id IN (SELECT product_id FROM results WHERE run_id=?)''',(run_id,))}
+        totals={'accepted':0,'rejected':0,'review':0,'total':len(candidate_rows)}
+        matched=set(); reviews=set(); accepted_sites={}; source_stats={}
+        source_names=json.loads(run['sites'] or '[]') if run else []
+        for site in dict.fromkeys(source_names+[r['site'] for r in results]):
+            source_stats[site]={'site':site,'checks_completed':0,'successful':0,'no_results':0,'errors':0,
+                                'candidates':0,'accepted':0,'rejected':0,'review':0,'matched_products':0}
+        per_result={}
+        for r in results:
+            source=source_stats[r['site']]
+            source['checks_completed']+=1
+            source['successful']+=r['status']=='ok'
+            source['no_results']+=r['status']=='no_results'
+            source['errors']+=r['status'] not in ('ok','no_results')
+            per_result[r['product_id'],r['site']]={'accepted':0,'rejected':0,'review':0}
+        for candidate in candidate_rows:
+            status=candidate['match_status']
+            if status in totals:totals[status]+=1
+            source=source_stats[candidate['site']]
+            source['candidates']+=1
+            if status in ('accepted','rejected','review'):
+                source[status]+=1
+                per_result[candidate['product_id'],candidate['site']][status]+=1
+            if status=='accepted':
+                matched.add(candidate['product_id'])
+                accepted_sites.setdefault(candidate['product_id'],set()).add(candidate['site'])
+            if status=='review':reviews.add(candidate['product_id'])
+        for site,source in source_stats.items():
+            source['matched_products']=sum(site in sites for sites in accepted_sites.values())
+        completed=run['completed'] if run else 0
+        selected=run['total'] if run else 0
+        checked_order=list(dict.fromkeys(r['product_id'] for r in results))
+        completed_ids=set(checked_order[:completed])
+        events=[]
+        for r in results[-20:][::-1]:
+            details=json.loads(r['details'])
+            events.append({'product_id':r['product_id'],'name':names[r['product_id']],'site':r['site'],
+                           'status':r['status'],'counts':per_result[r['product_id'],r['site']],
+                           'message':details.get('error') or details.get('warning') or details.get('scope',''),
+                           'extraction_method':details.get('extraction_method','page_parser')})
+        elapsed=0
+        if run:
+            try:
+                end=datetime.fromisoformat(run['finished_at']) if run['finished_at'] else datetime.now(timezone.utc)
+                elapsed=max(0,int((end-datetime.fromisoformat(run['started_at'])).total_seconds()))
+            except (ValueError,TypeError):pass
+        return {'run_id':run_id,'run':run,'workspace_products':imported,
+                'products':{'selected':selected,'completed':completed,'remaining':max(0,selected-completed),
+                            'matched':len(matched),'review_only':len(reviews-matched),
+                            'completed_without_match':len(completed_ids-matched),
+                            'two_source_matches':sum({'oson','arzon'}<=s for s in accepted_sites.values())},
+                'listings':totals,'sources':list(source_stats.values()),'events':events,
+                'progress_percent':round(completed/selected*100,1) if selected else 0,
+                'matched_percent':round(len(matched)/selected*100,1) if selected else 0,
+                'elapsed_seconds':elapsed,'active':active}

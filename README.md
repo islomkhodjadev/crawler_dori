@@ -112,6 +112,33 @@ Recognized columns: `name` / `Наименование товаров`, `manufac
 `arzon_id`, `oson_id`. Names are required; identifiers supplement matching.
 Invoice serial/lot numbers are not treated as website product IDs.
 
+## Live progress and statistics
+
+**Collection progress** appears near the top of the admin panel. Choose a crawl run
+there to see completed/selected products, a progress bar, the current product and
+website, elapsed time, matched products, completed products without an accepted
+match, and counts of collected/accepted/review/rejected listings. Per-site rows show
+successful searches, no results and errors. Recent source results include reasons.
+Counts refresh every four seconds and immediately after a manual match decision.
+
+Product counts and listing counts are different: one product can return many
+variants across two sites. A matched product has at least one accepted listing.
+**Source status `ok` means listings were returned; it never means an exact match
+was accepted.** AI candidates may all await review, so an `ok` Oson source can
+still have a blank accepted-price cell. Review those candidates to decide which
+match the actual manufacturer, strength and package.
+
+The main CSV preserves its original columns and appends match status, candidate /
+accepted / review / rejected counts for each site, and match explanations. Use
+**Export candidates** for every raw collected listing, including its price, source,
+match status and reasons. Unreviewed/rejected prices do not enter the market
+estimate. The product list in Market overview can be filtered by match status.
+
+`GET /api/statistics?run_id=...` returns the selected run's counters and activity;
+`GET /api/export/candidates?run_id=...` downloads listing-level evidence. Older
+SQLite databases receive additive progress columns automatically; product data,
+existing runs, matches and browser sessions are preserved.
+
 ## How matching and estimation work
 
 - Normalize Cyrillic/Latin names, case, spacing and common dosage forms.

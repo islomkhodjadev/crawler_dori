@@ -53,7 +53,7 @@ def main():
         products = store.products(ids)[:args.limit]
         if not products:
             parser.error('Import products first')
-        run_id = store.create_run(products)
+        run_id = store.create_run(products, sites=sites)
         asyncio.run(crawl(store, run_id, products, sites))
         print(json.dumps(store.report(run_id), ensure_ascii=False, indent=2))
     else:
