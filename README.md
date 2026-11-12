@@ -212,7 +212,7 @@ estimation. Add your key **locally** to `.env`:
 
 ```dotenv
 OPENAI_API_KEY=your_key_here
-OPENAI_MODEL=gpt-4.1-mini
+OPENAI_MODEL=gpt-6-astra
 ```
 
 Do not paste secrets into source code, commit `.env`, or publish browser profiles.
@@ -255,6 +255,35 @@ killed, start the web app once to recover its queued/running state before retryi
 Do not run multiple servers/CLI crawls against the same browser profile/database.
 
 The panel supports one administrator password with in-memory signed-in sessions. It does not implement multiple administrator accounts or team-level roles. Use the deployment guidance above before sharing access.
+
+## Monitoring
+
+```bash
+dori doctor                      # Python, Chromium, configuration, database, stalled runs
+dori monitor                     # live progress of the latest crawl (refreshes every 5 s)
+dori monitor --run-id 3 --once   # one snapshot of a specific run
+```
+
+`doctor` exits with status 1 when a check fails and never prints API keys or
+passwords. A run is reported as stalled when it has shown no activity for ten
+minutes; stop it from the panel or restart the app, which marks it interrupted.
+
+## Logs and tracing
+
+Every run writes `data/logs/dori.log` (rotated at 5 MB) and echoes to the terminal.
+It records each API request with its status and duration, each browser navigation
+and page decision, every search with its method and sample offers, and each AI
+request with its model, token use, returned content and any evidence rejections.
+Keys and bearer tokens are redacted; typed browser text is recorded only by length.
+
+```bash
+tail -f data/logs/dori.log                    # follow live
+grep 'page assessment' data/logs/dori.log     # every AI request and response
+grep 'search done' data/logs/dori.log         # outcome of each search
+grep -B2 -A12 'Traceback' data/logs/dori.log  # full error backtraces
+```
+
+Set `DORI_LOG_LEVEL=DEBUG` to include the page text excerpts sent to the AI.
 
 ## Tests
 

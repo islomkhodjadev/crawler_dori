@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 
 def main():
     load_dotenv()
+    from .logs import setup
+    setup()
     parser = argparse.ArgumentParser(description='Dori pharmacy price comparison')
     sub = parser.add_subparsers(dest='command', required=True)
     serve = sub.add_parser('serve')
@@ -23,6 +25,11 @@ def main():
     batch.add_argument('--sites', default='arzon,oson')
     report = sub.add_parser('report')
     report.add_argument('--run-id', type=int)
+    sub.add_parser('doctor', help='Check Python, Chromium, configuration, database and stalled runs')
+    watch = sub.add_parser('monitor', help='Show live progress of a crawl run')
+    watch.add_argument('--run-id', type=int, help='Defaults to the latest run')
+    watch.add_argument('--interval', type=float, default=5, help='Seconds between refreshes')
+    watch.add_argument('--once', action='store_true', help='Print one snapshot and exit')
     args = parser.parse_args()
     if args.command == 'serve':
         import uvicorn
@@ -32,8 +39,14 @@ def main():
         from .session import open_session
         asyncio.run(open_session(args.site, args.profile))
         return
+    if args.command == 'doctor':
+        from .monitor import doctor, print_doctor
+        raise SystemExit(print_doctor(doctor()))
     from .storage import Store
     store = Store()
+    if args.command == 'monitor':
+        from .monitor import watch
+        raise SystemExit(watch(store, args.run_id, max(1, args.interval), args.once))
     if args.command == 'import':
         from .importer import read_products
         products = read_products(args.file.read_bytes(), args.file.name)

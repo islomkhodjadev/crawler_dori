@@ -31,7 +31,9 @@ def parse_oson_cards(html, page_url):
                 name=candidate.get_text(' ',strip=True)
                 if (12 <= len(name) <= 600 and price_value(name) is None
                         and re.search(r'(?:№\s*\d|\d\s*(?:мг|мл|ме|mg|ml|iu)|\b(?:таб|капс|крем|спрей))',name,re.I)
-                        and not re.match(r'^(подробнее|цены в аптеках|найти|показано)',name,re.I)):
+                        and not re.match(r'^(подробнее|цены в аптеках|найти|показано)',name,re.I)
+                        # Pharmacy headings such as "999 Apteka №1" look like product titles.
+                        and not re.search(r'\b(?:apteka|аптека|аптек[ауи]?)\b',name,re.I)):
                     title=candidate
                     break
             if title:

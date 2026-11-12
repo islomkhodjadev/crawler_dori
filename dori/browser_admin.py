@@ -8,10 +8,15 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .adapters import BrowserCrawler, SourceError, VerificationRequired, now
+from .logs import get
+
+log = get('browser')
 
 SITES = {'arzon': 'https://arzonapteka.uz/ru', 'oson': 'https://osonapteka.uz/'}
 KEYS = {'Enter','Tab','Backspace','Delete','Escape','ArrowLeft','ArrowRight','ArrowUp','ArrowDown',
-        'Home','End','PageUp','PageDown','Space','Control+A','Meta+A','Shift+Tab'}
+        'Home','End','PageUp','PageDown','Space','Control+A','Meta+A','ControlOrMeta+A','Shift+Tab'}
+# Ctrl+A moves to line start on macOS, so select-all must use that OS's modifier.
+ALIASES = {'Control+A': 'ControlOrMeta+A', 'Meta+A': 'ControlOrMeta+A'}
 
 
 @dataclass
@@ -70,12 +75,15 @@ class BrowserAdmin:
                 await page.route('**/*', restrict_navigation)
                 session = Session(crawler, page)
                 self.sessions[site] = session
+                log.info('browser opened site=%s profile=%s', site, self.profile_root / site)
                 try:
                     # This is human navigation, not an automated crawl. Crawl permission
                     # and actual product extraction are checked separately below.
                     await page.goto(SITES[site], wait_until='domcontentloaded', timeout=60000)
+                    log.info('browser loaded site=%s url=%s', site, page.url)
                 except Exception as exc:
                     session.message = 'Page could not finish loading: ' + type(exc).__name__
+                    log.warning('browser page did not load site=%s: %s: %s', site, type(exc).__name__, exc)
                 return session
             except BaseException:
                 await crawler.__aexit__()
@@ -97,6 +105,7 @@ class BrowserAdmin:
                 if not offers or details['status'] != 'ok':
                     from .adapters import NoResults
                     raise NoResults('Search returned no priced products. Choose another test product; human verification is not required.')
+                log.info('connection check passed site=%s listings=%d method=%s', site, len(offers), details.get('extraction_method', 'page_parser'))
                 session.status = 'connected'
                 session.checked_at = now()
                 session.checked_monotonic = time.monotonic()
@@ -110,7 +119,9 @@ class BrowserAdmin:
                         'preview':[{'name':o.get('name',''),'price':o.get('price'),'currency':o.get('currency','UZS')} for o in offers[:3]]}
             except Exception as exc:
                 code=getattr(exc,'code','source_error')
-                session.status = 'needs_attention' if isinstance(exc,VerificationRequired) else code
+                log.warning('connection check failed site=%s state=%s: %s: %s', site,
+                            'needs_attention' if isinstance(exc, VerificationRequired) else code, type(exc).__name__, exc)
+                session.status = 'needs_attention' if isinstance(exc, VerificationRequired) else code
                 session.message = str(exc)[:600]
                 session.checked_monotonic = 0
                 session.ready.clear()
@@ -143,6 +154,7 @@ class BrowserAdmin:
                 s.busy = False
 
     async def wait_for_human(self, site, message):
+        log.warning('waiting for human verification site=%s: %s', site, message[:300])
         s = self.sessions[site]
         s.status = 'needs_attention'
         s.message = message[:600] + ' Complete verification, then Check connection to resume.'
@@ -158,6 +170,10 @@ class BrowserAdmin:
             raise ValueError('Browser is controlled by the crawler. Human input is available while paused.')
         async with s.lock:
             kind = command.get('type')
+            # Typed text is logged by length only, never by content.
+            log.info('browser input site=%s type=%s key=%s text_chars=%s x=%s y=%s', site, kind,
+                     command.get('key'), len(command['text']) if isinstance(command.get('text'), str) else None,
+                     command.get('x'), command.get('y'))
             if kind == 'click':
                 x, y = float(command['x']), float(command['y'])
                 if not (0 <= x <= 1280 and 0 <= y <= 800):
@@ -169,7 +185,7 @@ class BrowserAdmin:
                     raise ValueError('Text input is too long')
                 await s.page.keyboard.insert_text(value)
             elif kind == 'key' and command.get('key') in KEYS:
-                await s.page.keyboard.press(command['key'])
+                await s.page.keyboard.press(ALIASES.get(command['key'], command['key']))
             elif kind == 'scroll':
                 delta = max(-1200, min(1200, float(command.get('delta', 0))))
                 await s.page.mouse.wheel(0, delta)
@@ -195,6 +211,7 @@ class BrowserAdmin:
             await websocket.close(code=1008, reason='Open browser first; only one controller is allowed per website')
             return
         session.viewer = True
+        log.info('viewer connected site=%s', site)
         await websocket.accept()
         async def frames():
             while True:
@@ -222,3 +239,4 @@ class BrowserAdmin:
                 job.cancel()
             await asyncio.gather(*jobs, return_exceptions=True)
             session.viewer = False
+            log.info('viewer disconnected site=%s', site)

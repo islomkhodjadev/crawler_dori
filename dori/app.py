@@ -2,6 +2,7 @@ import asyncio
 import os
 import csv
 import io
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -18,6 +19,9 @@ from .service import crawl
 from .storage import Store
 from .browser_admin import BrowserAdmin, SITES
 from .auth import AdminAuth
+from .logs import get, setup as setup_logging
+
+log = get('http')
 
 
 class CrawlRequest(BaseModel):
@@ -35,6 +39,10 @@ class ReviewRequest(BaseModel):
     status: str
 
 
+class PriceRequest(BaseModel):
+    price: float | None = Field(default=None, gt=0, lt=1e9, allow_inf_nan=False)
+
+
 class ProductRequest(BaseModel):
     name: str = Field(min_length=1, max_length=500)
     manufacturer: str = Field(default='', max_length=300)
@@ -45,7 +53,19 @@ class ProductRequest(BaseModel):
     invoice_price: float | None = Field(default=None, ge=0, allow_inf_nan=False)
 
 
+def fit_price(price, low, high):
+    """Keep AI advice inside [low, high], rounded to 100 UZS when the range allows it."""
+    import math
+    price = min(max(price, low), high)
+    rounded = round(price / 100) * 100
+    if low <= rounded <= high:
+        return rounded
+    inner = [v for v in (math.ceil(low / 100) * 100, math.floor(high / 100) * 100) if low <= v <= high]
+    return min(inner, key=lambda v: abs(v - price)) if inner else round(price)
+
+
 def create_app(db_path=None):
+    setup_logging()
     store = Store(db_path)
     tasks = set()
     run_tasks = {}
@@ -66,6 +86,20 @@ def create_app(db_path=None):
     app.state.store = store
     app.state.browsers = browsers
     auth.install(app)
+
+    @app.middleware('http')
+    async def access_log(request: Request, call_next):
+        started = time.perf_counter()
+        try:
+            response = await call_next(request)
+        except Exception:
+            log.exception('unhandled error %s %s', request.method, request.url.path)
+            raise
+        elapsed = (time.perf_counter() - started) * 1000
+        # Request bodies are never logged: they can contain product data or passwords.
+        level = log.warning if response.status_code >= 400 else log.info
+        level('%s %s -> %s in %.0f ms', request.method, request.url.path, response.status_code, elapsed)
+        return response
 
     @app.middleware('http')
     async def local_origin(request: Request, call_next):
@@ -214,6 +248,42 @@ def create_app(db_path=None):
             raise HTTPException(400, str(exc)) from exc
         return {'ok': True}
 
+    @app.post('/api/offers/{offer_id}/price')
+    def set_price(offer_id: int, body: PriceRequest):
+        try:
+            store.set_price(offer_id, body.price)
+        except KeyError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        log.info('offer %s price %s', offer_id, 'reset to read price' if body.price is None else f'set manually to {body.price}')
+        return {'ok': True}
+
+    @app.post('/api/products/{product_id}/optimal-price')
+    async def optimal_price(product_id: int, run_id: int | None = None):
+        from .ai import AIExtractionError, recommend_price
+        report = store.report(run_id)
+        entry = next((e for e in report['products'] if e['product']['id'] == product_id), None)
+        if not entry:
+            raise HTTPException(404, 'Product is not part of this collection')
+        confirmed = [{'site': o['site'], 'name': o['name'], 'price': o['price']}
+                     for o in entry['offers'] if o['match_status'] == 'accepted' and o['price'] > 0]
+        if not confirmed:
+            raise HTTPException(409, 'Нет подтверждённых цен конкурентов — сначала подтвердите совпадения.')
+        ours = entry['product'].get('invoice_price')
+        prices = [o['price'] for o in confirmed] + ([ours] if ours else [])
+        low, high = min(prices), max(prices)
+        try:
+            advice = await recommend_price(entry['product'], ours, confirmed, low, high)
+        except AIExtractionError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        price = fit_price(advice['price'], low, high)
+        if price != advice['price']:
+            log.warning('price advice for product %s adjusted from %s to %s (range %s-%s)', product_id, advice['price'], price, low, high)
+        advice.update(price=price, low=low, high=high)
+        store.save_advice(report['run_id'], product_id, advice)
+        return advice
+
     @app.post('/api/products/{product_id}/suggest-attributes')
     async def ai_suggest(product_id: int):
         from .ai import suggest_attributes
@@ -236,7 +306,8 @@ def create_app(db_path=None):
         writer.writerow(['product_id','name','manufacturer','invoice_price','arzon_price','oson_price',
                          'estimate_uzs','estimate_status','invoice_delta_percent','arzon_status','oson_status','sources',
                          'match_status','arzon_candidates','arzon_accepted','arzon_review','arzon_rejected',
-                         'oson_candidates','oson_accepted','oson_review','oson_rejected','match_notes'])
+                         'oson_candidates','oson_accepted','oson_review','oson_rejected','match_notes',
+                         'optimal_price_uzs','optimal_price_reason'])
         for entry in report['products']:
             p, e = entry['product'], entry['estimate']
             row = [p['id'], p['name'], p['manufacturer'], p.get('invoice_price'), e['per_site'].get('arzon'),
@@ -248,6 +319,7 @@ def create_app(db_path=None):
             for site in ('arzon','oson'):
                 row.extend(summary['per_site'].get(site,{}).get(key,0) for key in ('candidates','accepted','review','rejected'))
             row.append(summary['notes'])
+            row.extend([entry['advice']['price'], entry['advice']['reason']] if entry.get('advice') else ['', ''])
             # Prevent spreadsheet formula execution from untrusted names/manufacturers.
             writer.writerow(["'" + v if isinstance(v, str) and v.lstrip().startswith(('=', '+', '-', '@')) else v for v in row])
         return Response('\ufeff' + out.getvalue(), media_type='text/csv; charset=utf-8',
@@ -258,12 +330,14 @@ def create_app(db_path=None):
         out=io.StringIO()
         writer=csv.writer(out)
         writer.writerow(['product_id','input_name','site','listing_id','listing_name','manufacturer','price_uzs',
-                         'match_status','name_score','reasons','observed_at','source_url','reviewed_at'])
+                         'match_status','name_score','reasons','observed_at','source_url','reviewed_at','comment',
+                         'read_price_uzs','manual_price_uzs'])
         for entry in store.report(run_id)['products']:
             for offer in entry['offers']:
                 row=[entry['product']['id'],entry['product']['name'],offer['site'],offer['id'],offer['name'],
                      offer.get('manufacturer',''),offer['price'],offer['match_status'],offer['score'],
-                     ' | '.join(offer['reasons']),offer.get('observed_at',''),offer['url'],offer.get('reviewed_at','')]
+                     ' | '.join(offer['reasons']),offer.get('observed_at',''),offer['url'],offer.get('reviewed_at',''),offer.get('comment',''),
+                     offer.get('observed_price',offer['price']),offer.get('manual_price') or '']
                 writer.writerow(["'"+v if isinstance(v,str) and v.lstrip().startswith(('=','+','-','@')) else v for v in row])
         return Response('\ufeff'+out.getvalue(),media_type='text/csv; charset=utf-8',
                         headers={'Content-Disposition':'attachment; filename="dori-candidates.csv"'})

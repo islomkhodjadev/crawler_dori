@@ -10,7 +10,10 @@ from urllib.robotparser import RobotFileParser
 import httpx
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
+from .logs import get
 from .page_state import classify_text, has_visible_price
+
+log = get('adapters')
 
 
 class SourceError(RuntimeError):
@@ -193,6 +196,7 @@ class BrowserCrawler:
             self.robots[root] = parser
         parser = self.robots[root]
         if not parser.can_fetch('DoriPriceBot', url):
+            log.warning('robots.txt disallows url=%s', url)
             raise CrawlPermissionError('robots.txt disallows this search path')
         return max(self.delay, parser.crawl_delay('DoriPriceBot') or parser.crawl_delay('*') or 0)
 
@@ -209,10 +213,12 @@ class BrowserCrawler:
                 break
             await asyncio.sleep(delay * 2)
             self.last_request[host] = loop.time()
+        log.info('navigate url=%s status=%s', url, response.status if response else None)
         if response and response.status == 429:
             raise RateLimited('Website rate limit reached; wait before retrying')
         body = await page.locator('body').inner_text()
         state = classify_text(body)
+        log.info('page state url=%s state=%s text_chars=%d', page.url, state, len(body))
         if state == 'human_verification':
             raise VerificationRequired('Website requests human verification')
         if state == 'access_blocked' or (response and response.status in (401, 403)):
@@ -259,6 +265,24 @@ class BrowserCrawler:
         raise ExtractionError('AI page assessment: '+state+'. '+result['reason'])
 
     async def search(self, site, product, page=None, use_ai=None):
+        log.info('search start site=%s product_id=%s name=%r use_ai=%s', site, product.get('id'), product['name'], use_ai)
+        try:
+            offers, details = await self._search(site, product, page=page, use_ai=use_ai)
+        except Exception as exc:
+            if isinstance(exc, (SourceError, ValueError)):
+                log.warning('search stopped site=%s product_id=%s: %s: %s', site, product.get('id'), type(exc).__name__, exc)
+            else:
+                log.exception('search crashed site=%s product_id=%s', site, product.get('id'))
+            raise
+        sample = [f"{o['name'][:60]} @ {o['price']}" for o in offers[:3]]
+        log.info('search done site=%s product_id=%s status=%s method=%s offers=%d sample=%s url=%s',
+                 site, product.get('id'), details.get('status'), details.get('extraction_method', 'page_parser'),
+                 len(offers), sample, details.get('url'))
+        if details.get('warning'):
+            log.warning('search warning site=%s product_id=%s: %s', site, product.get('id'), details['warning'])
+        return offers, details
+
+    async def _search(self, site, product, page=None, use_ai=None):
         from .matching import search_term
         if use_ai is None:
             use_ai = os.getenv('OPENAI_PARSE_HTML', 'false').lower() == 'true'

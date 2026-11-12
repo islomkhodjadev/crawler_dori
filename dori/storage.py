@@ -29,6 +29,10 @@ CREATE TABLE IF NOT EXISTS offers (
  reasons TEXT NOT NULL, reviewed_at TEXT
 );
 CREATE INDEX IF NOT EXISTS offers_result ON offers(result_id);
+CREATE TABLE IF NOT EXISTS price_advice (
+ run_id INTEGER NOT NULL, product_id INTEGER NOT NULL, price REAL NOT NULL, low REAL NOT NULL, high REAL NOT NULL,
+ reason TEXT NOT NULL, model TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (run_id, product_id)
+);
 '''
 
 
@@ -43,6 +47,10 @@ class Store:
                                       'last_activity':'TEXT','sites':"TEXT NOT NULL DEFAULT '[]'"}.items():
                 if name not in existing:
                     db.execute(f'ALTER TABLE runs ADD COLUMN {name} {declaration}')
+            existing={row['name'] for row in db.execute('PRAGMA table_info(offers)')}
+            for name, declaration in {'manual_price':'REAL','price_edited_at':'TEXT'}.items():
+                if name not in existing:
+                    db.execute(f'ALTER TABLE offers ADD COLUMN {name} {declaration}')
 
     @contextmanager
     def connect(self):
@@ -128,6 +136,21 @@ class Store:
                 raise ValueError('Conflicting product attributes: correct the input and crawl again')
             db.execute('UPDATE offers SET match_status=?,reviewed_at=? WHERE id=?', (status, now(), offer_id))
 
+    def save_advice(self, run_id, product_id, advice):
+        with self.connect() as db:
+            db.execute('INSERT OR REPLACE INTO price_advice VALUES (?,?,?,?,?,?,?,?)',
+                       (run_id, product_id, advice['price'], advice['low'], advice['high'], advice['reason'], advice['model'], now()))
+
+    def set_price(self, offer_id, price):
+        """Store an operator-entered price that replaces the read one; None restores the read price."""
+        if price is not None and not (0 < price < 1e9):
+            raise ValueError('Price must be greater than zero')
+        with self.connect() as db:
+            if not db.execute('SELECT 1 FROM offers WHERE id=?', (offer_id,)).fetchone():
+                raise KeyError('Offer not found')
+            db.execute('UPDATE offers SET manual_price=?,price_edited_at=? WHERE id=?',
+                       (price, now() if price is not None else None, offer_id))
+
     def report(self, run_id=None):
         from .estimate import estimate
         with self.connect() as db:
@@ -135,19 +158,34 @@ class Store:
                 row = db.execute('SELECT max(id) FROM runs').fetchone()
                 run_id = row[0]
             rows = db.execute('SELECT * FROM results WHERE run_id=?', (run_id,)).fetchall()
+            advice = {r['product_id']: dict(r) for r in db.execute('SELECT * FROM price_advice WHERE run_id=?', (run_id,))}
             grouped = {}
             for row in rows:
                 product_id = row['product_id']
                 entry = grouped.setdefault(product_id, {'product': self.products([product_id])[0], 'sources': {}, 'offers': []})
                 entry['sources'][row['site']] = json.loads(row['details'])
                 for offer in db.execute('SELECT * FROM offers WHERE result_id=?', (row['id'],)):
-                    entry['offers'].append({**json.loads(offer['data']), 'id': offer['id'],
-                                               'match_status': offer['match_status'], 'score': offer['score'],
-                                               'reasons': json.loads(offer['reasons']), 'reviewed_at': offer['reviewed_at']})
+                    data = {**json.loads(offer['data']), 'id': offer['id'],
+                            'match_status': offer['match_status'], 'score': offer['score'],
+                            'reasons': json.loads(offer['reasons']), 'reviewed_at': offer['reviewed_at'],
+                            'manual_price': offer['manual_price'], 'price_edited_at': offer['price_edited_at']}
+                    if offer['manual_price'] is not None:
+                        # The operator's price replaces the read one everywhere; the read price stays visible.
+                        data['observed_price'], data['price'] = data['price'], offer['manual_price']
+                    entry['offers'].append(data)
+        from .matching import explain, match, summarize_matches
         result = []
         for entry in grouped.values():
+            for offer in entry['offers']:
+                # Explain with the current rules so older runs get accurate comments; the stored decision stays.
+                current = match(entry['product'], offer)
+                offer['comment'] = explain(entry['product'], offer, offer['match_status'], current['reasons'], offer['score'],
+                                           reviewed=bool(offer.get('reviewed_at')), current_status=current['status'])
+                if offer.get('manual_price') is not None:
+                    was, now_ = (f'{v:,.0f}'.replace(',', ' ') for v in (offer['observed_price'], offer['price']))
+                    offer['comment'] += f' Цена исправлена вручную: было {was} сум, стало {now_} сум.'
             entry['estimate'] = estimate(entry['offers'], entry['product'].get('invoice_price'))
-            from .matching import summarize_matches
+            entry['advice'] = advice.get(entry['product']['id'])
             entry['matching']=summarize_matches(entry['offers'],entry['sources'])
             result.append(entry)
         return {'run_id': run_id, 'products': result}

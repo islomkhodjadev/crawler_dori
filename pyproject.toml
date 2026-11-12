@@ -15,6 +15,9 @@ dev = ["pytest>=8,<10"]
 [project.scripts]
 dori = "dori.cli:main"
 
+[tool.setuptools.packages.find]
+include = ["dori*"]
+
 [tool.setuptools.package-data]
 dori = ["static/*"]
 
