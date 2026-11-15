@@ -93,3 +93,14 @@
   This branch does not establish successful live Oson verification.
 - No SHA1 verification endpoint or token payload was guessed. Direct PoW and
   fingerprint-spoofing adapters are not included. See docs/SAFELINE_EXPERIMENT.md.
+
+## Installed Google Chrome option (experiment branch only)
+
+- 97 unit/API tests pass. Added channel selection, visible mode, proxy propagation,
+  invalid-configuration handling and the actual options passed to persistent launch.
+- Google Chrome is not installed on this cloud executor. Launch configuration was
+  tested with a mock Playwright runtime; real Google Chrome/Oson validation must
+  be performed on the target Mac/server. Existing Chromium fixtures still pass.
+- Chrome uses a dedicated profile; personal profiles and account cookies are not
+  copied. The experiment remains Playwright-controlled and does not guarantee
+  removal of SafeLine debugging detection.

@@ -49,13 +49,17 @@ if [[ ! -e .env ]]; then
   printf '%s\n' 'Created .env. Add OPENAI_API_KEY there to enable AI, then restart the app.'
 fi
 
-printf '%s\n' 'Checking the Chromium installation…'
+printf '%s\n' 'Checking the browser configuration…'
 "$DORI_VENV_PYTHON" - <<'PY'
 import subprocess
 import sys
 from dotenv import load_dotenv
 load_dotenv('.env')
-subprocess.run([sys.executable, '-m', 'playwright', 'install', 'chromium'], check=True)
+from dori.browser_config import browser_channel
+if browser_channel() == 'chrome':
+    print('Using installed Google Chrome. Chrome must be installed on this machine.')
+else:
+    subprocess.run([sys.executable, '-m', 'playwright', 'install', 'chromium'], check=True)
 PY
 
 printf '%s\n' 'Starting Dori admin. Default URL: http://127.0.0.1:8000 — stop with Control+C.'

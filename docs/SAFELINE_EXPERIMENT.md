@@ -68,3 +68,35 @@ real-human handoff, hard denial and a challenge that never completes.
 These are controlled fixtures, not proof of defeating Oson's current WAF. The
 cloud's observed live Oson responses were 403 hard denials without the proposed
 SHA1 or WASM parameters. Live deployment verification is still required.
+
+## Try installed Google Chrome on a Mac
+
+Install Google Chrome normally, stop Dori, and edit this deployment's `.env`:
+
+```dotenv
+DORI_BROWSER_CHANNEL=chrome
+DORI_HEADLESS=false
+```
+
+Restart with `bash run.sh`. Both embedded browsers and the `browser-session` CLI
+now use Playwright's `chrome` channel, which launches the installed Google Chrome
+binary rather than bundled Chromium. The launcher skips downloading bundled
+Chromium in this mode. Set `DORI_BROWSER_CHANNEL=chromium` to restore the default.
+
+The admin uses separate dedicated Chrome profiles under each site's
+`google-chrome` directory. It does not copy or attach to your personal Chrome
+profile, Google account or existing Chrome tabs. Do not configure the crawler
+with your everyday Chrome user-data directory. Site sessions can be established
+inside the dedicated browser.
+
+On a hosted deployment, Chrome is launched on the server—not on the Mac visiting
+the admin page. Install Chrome on that server first. Visible mode requires a
+working display; headless Google Chrome can be selected with `DORI_HEADLESS=true`.
+Compare local and server results separately because IP, cookies, browser version
+and automation state all differ. A signed-in Google account is not established as
+the reason ordinary browsing succeeds.
+
+Branded Chrome still uses Playwright's control/debugging connection. This option
+is an A/B test of the browser channel, not a confirmed cure for “Debugging
+Detected.” If that warning remains, the binary change did not remove the trigger.
+No stealth or debugger-concealment patches are included.

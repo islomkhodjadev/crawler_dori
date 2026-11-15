@@ -10,6 +10,7 @@ from urllib.robotparser import RobotFileParser
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
 from .challenge import settle, retry_after_seconds
+from .browser_config import launch_options
 from .logs import get
 from .page_state import classify_text, has_visible_price
 
@@ -154,12 +155,9 @@ class BrowserCrawler:
         self.max_backoff=max(0,min(300,float(os.getenv('DORI_MAX_BACKOFF','30'))))
 
     async def __aenter__(self):
+        options = launch_options()
         self.playwright = await async_playwright().start()
-        options = {'headless': True}
-        if os.getenv('DORI_BROWSER_PROXY'):
-            options['proxy'] = {'server': os.environ['DORI_BROWSER_PROXY']}
         try:
-            options['headless'] = os.getenv('DORI_HEADLESS', 'true').lower() != 'false'
             profile = self.profile or os.getenv('DORI_BROWSER_PROFILE')
             if profile:
                 self.context = await self.playwright.chromium.launch_persistent_context(profile, locale='ru-RU', **options)

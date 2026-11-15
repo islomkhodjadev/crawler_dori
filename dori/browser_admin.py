@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .adapters import BrowserCrawler, SourceError, VerificationRequired, now
+from .browser_config import browser_channel
 from .logs import get
 
 log = get('browser')
@@ -59,7 +60,9 @@ class BrowserAdmin:
         async with self.open_lock:
             if site in self.sessions:
                 return self.sessions[site]
-            crawler = BrowserCrawler(profile=str(self.profile_root / site), interactive=True)
+            profile=self.profile_root/site
+            if browser_channel()=='chrome':profile=profile/'google-chrome'
+            crawler = BrowserCrawler(profile=str(profile), interactive=True)
             await crawler.__aenter__()
             try:
                 page = crawler.context.pages[0] if crawler.context.pages else await crawler.context.new_page()
@@ -76,7 +79,7 @@ class BrowserAdmin:
                 await page.route('**/*', restrict_navigation)
                 session = Session(crawler, page)
                 self.sessions[site] = session
-                log.info('browser opened site=%s profile=%s', site, self.profile_root / site)
+                log.info('browser opened site=%s profile=%s', site, profile)
                 try:
                     # This is human navigation, not an automated crawl. Crawl permission
                     # and actual product extraction are checked separately below.

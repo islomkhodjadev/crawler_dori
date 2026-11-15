@@ -191,7 +191,10 @@ def create_app(db_path=None):
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         except Exception as exc:
-            raise HTTPException(503, 'Chromium could not start: ' + type(exc).__name__ + '. Run python -m playwright install chromium.') from exc
+            hint = ('Install Google Chrome on the machine running this app, or set DORI_BROWSER_CHANNEL=chromium.'
+                    if os.getenv('DORI_BROWSER_CHANNEL','chromium').lower()=='chrome'
+                    else 'Run python -m playwright install chromium.')
+            raise HTTPException(503, 'Browser could not start: '+type(exc).__name__+'. '+hint+' Visible mode also requires a desktop display.') from exc
         return browsers.state()[site]
 
     @app.post('/api/browsers/{site}/check')

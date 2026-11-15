@@ -2,13 +2,12 @@
 import asyncio
 import os
 from playwright.async_api import async_playwright
+from .browser_config import launch_options
 
 
 async def open_session(site, profile):
     async with async_playwright() as playwright:
-        options = {'headless': False, 'locale': 'ru-RU'}
-        if os.getenv('DORI_BROWSER_PROXY'):
-            options['proxy'] = {'server': os.environ['DORI_BROWSER_PROXY']}
+        options = {**launch_options(visible=True), 'locale':'ru-RU'}
         context = await playwright.chromium.launch_persistent_context(profile, **options)
         try:
             page = await context.new_page()
