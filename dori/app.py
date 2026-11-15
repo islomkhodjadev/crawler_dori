@@ -165,8 +165,11 @@ def create_app(db_path=None):
         use_ai = body.use_ai if body.use_ai is not None else bool(os.getenv('OPENAI_API_KEY'))
         if use_ai and not os.getenv('OPENAI_API_KEY'):
             raise HTTPException(400, 'Configure OPENAI_API_KEY before enabling AI parsing')
+        # Sites covered by the Chrome extension agent don't need a server-side browser session.
+        agent_sites = {'oson'} if agent_bus.connected() else set()
+        sites_needing_browser = [s for s in body.sites if s not in agent_sites]
         try:
-            browsers.require_ready(body.sites)
+            browsers.require_ready(sites_needing_browser)
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
         products = store.products(list(set(body.product_ids)))
@@ -242,6 +245,42 @@ def create_app(db_path=None):
     def agent_status():
         """How many Chrome extensions are currently connected."""
         return {'connected': agent_bus.connected()}
+
+    @app.post('/api/agent/check')
+    async def agent_check(body: ConnectionRequest):
+        """Send a real Oson search through the connected agent and verify it returns prices."""
+        if not agent_bus.connected():
+            raise HTTPException(503, 'No Chrome extension connected. Install the extension and connect it first.')
+        products = store.products([body.product_id])
+        if not products:
+            raise HTTPException(404, 'Select an imported product for the connection test')
+        from .adapters import BrowserCrawler
+        from .matching import search_term
+        from urllib.parse import urlencode
+        product = products[0]
+        agent_url = 'https://osonapteka.uz/search?' + urlencode({'q': search_term(product)})
+        result = await agent_bus.fetch(agent_url, 'oson')
+        if not result or not result.get('html'):
+            raise HTTPException(502, 'Extension timed out or returned no page. Check that your Chrome is open and the extension is connected.')
+        from bs4 import BeautifulSoup
+        from .adapters import parse_oson_jsonld
+        from .oson_cards import parse_oson_cards
+        from .page_state import classify_text
+        html = result['html']
+        final_url = result.get('url', agent_url)
+        offers = parse_oson_jsonld(html, final_url)
+        method = 'json_ld'
+        if not offers:
+            offers = parse_oson_cards(html, final_url)
+            method = 'visible_cards'
+        body_text = BeautifulSoup(html, 'html.parser').get_text(' ', strip=True)
+        state = classify_text(body_text)
+        if offers:
+            return {'ok': True, 'listings': len(offers), 'method': method,
+                    'preview': [{'name': o.get('name',''), 'price': o.get('price'), 'currency': 'UZS'} for o in offers[:3]]}
+        if state == 'no_results':
+            return {'ok': True, 'listings': 0, 'method': 'no_results', 'preview': []}
+        return {'ok': False, 'state': state, 'error': f'Page loaded (state: {state}) but no priced offers parsed. Try a different test product.'}
 
     @app.get('/api/agent/extension.zip')
     def agent_extension_zip():

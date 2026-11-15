@@ -78,8 +78,13 @@
         </div>
         <span class="agent-badge" id="agent-badge"></span>
       </div>
+      <div class="agent-profile" id="agent-profile" hidden>
+        <span class="label" data-i18n="agent.profile"></span>
+        <span id="agent-profile-name"></span>
+      </div>
       <div class="agent-actions">
         <a id="agent-download" class="button ghost" href="/api/agent/extension.zip" download data-i18n="agent.download"></a>
+        <button id="agent-check" class="ghost" data-i18n="connect.check" hidden></button>
         <small class="muted" id="agent-status-text"></small>
       </div>
     </div>

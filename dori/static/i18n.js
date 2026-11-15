@@ -72,6 +72,7 @@ const I18N = {
     'price.edited': 'исправлено вручную · было {p}', 'price.saved': 'Цена сохранена.', 'price.invalid': 'Введите цену больше нуля.',
     'agent.title': 'Расширение Chrome (агент)', 'agent.hint': 'Установите расширение на свой компьютер. Oson будет загружаться через ваш браузер — их IP не заблокирован.',
     'agent.download': 'Скачать расширение (.zip)', 'agent.connected': '🟢 Агент подключён', 'agent.disconnected': '⚪ Агент не подключён',
+    'agent.profile': 'Последняя проверка:',
   },
   uz: {
     'state.loading': 'Yuklanmoqda', 'state.verifying': 'Avtomatik tekshiruv', 'state.backoff': 'Qayta urinish kutilmoqda', 'state.verification_timeout': 'Tekshiruv vaqti tugadi',
@@ -145,6 +146,7 @@ const I18N = {
     'price.edited': "qo'lda tuzatilgan · avval {p}", 'price.saved': 'Narx saqlandi.', 'price.invalid': 'Noldan katta narx kiriting.',
     'agent.title': 'Chrome kengaytmasi (agent)', 'agent.hint': "Kengaytmani o'z kompyuteringizga o'rnating. Oson sizning brauzeringiz orqali yuklanadi — ularning IP bloklanmagan.",
     'agent.download': "Kengaytmani yuklab olish (.zip)", 'agent.connected': '🟢 Agent ulangan', 'agent.disconnected': '⚪ Agent ulanmagan',
+    'agent.profile': "So'nggi tekshiruv:",
   },
   en: {
     'state.loading': 'Loading', 'state.verifying': 'Automatic verification', 'state.backoff': 'Waiting to retry', 'state.verification_timeout': 'Verification timed out',
@@ -218,5 +220,6 @@ const I18N = {
     'price.edited': 'corrected manually · was {p}', 'price.saved': 'Price saved.', 'price.invalid': 'Enter a price greater than zero.',
     'agent.title': 'Chrome extension (agent)', 'agent.hint': 'Install the extension on your computer. Oson loads through your browser — your IP is not blocked.',
     'agent.download': 'Download extension (.zip)', 'agent.connected': '🟢 Agent connected', 'agent.disconnected': '⚪ Agent not connected',
+    'agent.profile': 'Last check:',
   },
 };

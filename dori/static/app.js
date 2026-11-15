@@ -33,6 +33,46 @@ async function api(url, options = {}) {
 }
 const post = (url, body) => api(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
 
+/* ---------- agent UI ---------- */
+let agentCheckBusy = false;
+function updateAgentUI() {
+  const badge = $('#agent-badge');
+  const checkBtn = $('#agent-check');
+  const profileRow = $('#agent-profile');
+  if (badge) badge.textContent = t(agentConnected ? 'agent.connected' : 'agent.disconnected');
+  if (checkBtn) checkBtn.hidden = !agentConnected;
+  if (profileRow) profileRow.hidden = !agentConnected;
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const checkBtn = $('#agent-check');
+  if (checkBtn) checkBtn.addEventListener('click', async () => {
+    if (agentCheckBusy) return;
+    const productId = parseInt($('#test-product')?.value);
+    if (!productId) { toast(t('connect.needProduct')); return; }
+    agentCheckBusy = true;
+    const statusEl = $('#agent-status-text');
+    if (statusEl) statusEl.textContent = t('connect.checking');
+    try {
+      const r = await post('/api/agent/check', {product_id: productId});
+      if (r.ok) {
+        const profileEl = $('#agent-profile-name');
+        if (profileEl) profileEl.textContent = t('connect.verified', {n: r.listings});
+        if (statusEl) statusEl.textContent = '';
+        toast(t('connect.verified', {n: r.listings}) + (r.method ? ' (' + r.method + ')' : ''));
+      } else {
+        if (statusEl) statusEl.textContent = r.error || 'Error';
+        toast(r.error || 'Agent check failed');
+      }
+    } catch (x) {
+      if (statusEl) statusEl.textContent = x.message;
+      toast(x.message);
+    } finally {
+      agentCheckBusy = false;
+    }
+  });
+});
+
 /* ---------- language and tabs ---------- */
 function applyLanguage() {
   document.documentElement.lang = lang;
@@ -44,8 +84,7 @@ function applyLanguage() {
     .map(v => `<option value="${v}">${esc(t('filter.' + v))}</option>`).join('');
   $('#report-filter').value = filter;
   $('#ai-availability').textContent = t(aiConfigured ? 'connect.aiOn' : 'connect.aiOff');
-  const badge = $('#agent-badge');
-  if (badge) badge.textContent = t(agentConnected ? 'agent.connected' : 'agent.disconnected');
+  updateAgentUI();
   renderAll();
 }
 function showTab(name) {
@@ -123,7 +162,12 @@ async function loadProducts() {
 
 /* ---------- 2. connect ---------- */
 function chosenSites() { return [...sites]; }
-function connectionsReady() { const list = chosenSites(); return list.length > 0 && list.every(s => sourceState[s]?.status === 'connected' && !sourceState[s]?.busy); }
+function siteReady(s) {
+  // Oson is covered by the Chrome extension agent when connected — no server browser needed.
+  if (s === 'oson' && agentConnected) return true;
+  return sourceState[s]?.status === 'connected' && !sourceState[s]?.busy;
+}
+function connectionsReady() { const list = chosenSites(); return list.length > 0 && list.every(siteReady); }
 function renderBrowsers() {
   $('#browser-cards').innerHTML = ['arzon', 'oson'].map(site => {
     const s = sourceState[site] || {status: 'closed', message: '', opened: false};
@@ -161,8 +205,10 @@ function collectBlocker() {
 function renderCollect() {
   $('#collect-selected').textContent = selected.size;
   $('#collect-sites').innerHTML = ['arzon', 'oson'].map(site => {
-    const status = sourceState[site]?.status || 'closed';
-    return `<label class="check site-pick"><input type="checkbox" data-site-toggle="${site}" ${sites.has(site) ? 'checked' : ''}> ${siteName(site)} <span class="pill ${stateClass(status)}">${esc(stateLabel(status))}</span></label>`;
+    const agentOk = site === 'oson' && agentConnected;
+    const status = agentOk ? 'connected' : (sourceState[site]?.status || 'closed');
+    const label = agentOk ? t('agent.connected') : stateLabel(status);
+    return `<label class="check site-pick"><input type="checkbox" data-site-toggle="${site}" ${sites.has(site) ? 'checked' : ''}> ${siteName(site)} <span class="pill ${stateClass(status)}">${esc(label)}</span></label>`;
   }).join('');
   const blocker = collectBlocker();
   $('#collect-blocker').textContent = blocker;
@@ -510,8 +556,7 @@ $('#remote-control').onpaste = e => { e.preventDefault(); sendBrowser({type: 'te
     try {
       const h = await api('/api/health');
       agentConnected = Boolean(h.agent_connected);
-      const badge = $('#agent-badge');
-      if (badge) badge.textContent = t(agentConnected ? 'agent.connected' : 'agent.disconnected');
+      updateAgentUI();
     } catch {}
     try { await refreshBrowsers(); await refreshRuns(); } catch {};
   }, 4000);
