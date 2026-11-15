@@ -54,33 +54,60 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
-async def agent_search_oson(agent_bus, product, use_ai=None):
-    """Fetch Oson search results through the connected Chrome extension agent."""
-    from .matching import search_term
+async def _fetch_oson_page(agent_bus, query):
+    """Fetch one Oson search page via agent and return (offers, html, final_url) or None on failure."""
     from .oson_cards import parse_oson_cards
-    agent_url = 'https://osonapteka.uz/search?' + urlencode({'q': search_term(product, site='oson')})
-    log.info('agent shortcut site=oson product_id=%s url=%.120s', product.get('id'), agent_url)
+    agent_url = 'https://osonapteka.uz/search?' + urlencode({'q': query})
     result = await agent_bus.fetch(agent_url, 'oson')
-    if result and result.get('html'):
-        html = result['html']
-        final_url = result.get('url', agent_url)
-        offers = parse_oson_jsonld(html, final_url)
-        method = 'agent_json_ld'
-        if not offers:
-            offers = parse_oson_cards(html, final_url)
-            method = 'agent_visible_cards'
-        if offers:
-            return offers, {'status': 'ok', 'url': final_url, 'pages': 1,
-                            'extraction_method': method,
-                            'scope': 'Oson prices via Chrome extension agent (user browser)'}
-        body_text = BeautifulSoup(html, 'html.parser').get_text(' ', strip=True)
-        state = classify_text(body_text)
-        if state == 'no_results':
-            return [], {'status': 'no_results', 'url': final_url, 'pages': 1}
-        log.warning('agent shortcut returned page but no offers parsed site=oson state=%s', state)
-        return [], {'status': 'error', 'url': final_url, 'error': f'agent page received but no offers parsed (state={state})', 'observed_at': now()}
-    log.warning('agent shortcut failed or timed out for oson product_id=%s', product.get('id'))
-    return [], {'status': 'error', 'error': 'agent fetch timed out or returned no HTML', 'observed_at': now()}
+    if not result or not result.get('html'):
+        return None
+    html = result['html']
+    final_url = result.get('url', agent_url)
+    offers = parse_oson_jsonld(html, final_url)
+    if not offers:
+        offers = parse_oson_cards(html, final_url)
+    return offers, html, final_url
+
+
+async def agent_search_oson(agent_bus, product, use_ai=None):
+    """Fetch Oson search results through the connected Chrome extension agent.
+    If the primary search returns no parseable offers, try AI-generated name variants."""
+    from .matching import search_term
+    primary_query = search_term(product, site='oson')
+    log.info('agent shortcut site=oson product_id=%s query=%r', product.get('id'), primary_query)
+
+    fetched = await _fetch_oson_page(agent_bus, primary_query)
+    if fetched is None:
+        log.warning('agent shortcut failed or timed out for oson product_id=%s', product.get('id'))
+        return [], {'status': 'error', 'error': 'agent fetch timed out or returned no HTML', 'observed_at': now()}
+
+    offers, html, final_url = fetched
+    if offers:
+        return offers, {'status': 'ok', 'url': final_url, 'pages': 1,
+                        'extraction_method': 'agent_json_ld' if parse_oson_jsonld(html, final_url) else 'agent_visible_cards',
+                        'scope': 'Oson prices via Chrome extension agent (user browser)'}
+
+    # Primary query returned a page but no offers — try AI-generated variants.
+    if use_ai or os.getenv('OPENAI_API_KEY'):
+        from .ai import search_term_variants
+        variants = await search_term_variants(product, site='oson')
+        for variant in variants:
+            if variant.lower() == primary_query.lower():
+                continue
+            log.info('agent shortcut oson fallback product_id=%s variant=%r', product.get('id'), variant)
+            fetched2 = await _fetch_oson_page(agent_bus, variant)
+            if fetched2 and fetched2[0]:
+                v_offers, v_html, v_url = fetched2
+                return v_offers, {'status': 'ok', 'url': v_url, 'pages': 1,
+                                  'extraction_method': 'agent_json_ld',
+                                  'scope': f'Oson via agent (AI variant: {variant})'}
+
+    body_text = BeautifulSoup(html, 'html.parser').get_text(' ', strip=True)
+    state = classify_text(body_text)
+    if state == 'no_results':
+        return [], {'status': 'no_results', 'url': final_url, 'pages': 1}
+    log.warning('agent shortcut returned page but no offers parsed site=oson state=%s', state)
+    return [], {'status': 'no_results', 'url': final_url, 'pages': 1}
 
 
 def price_value(text):
@@ -367,34 +394,12 @@ class BrowserCrawler:
 
         # Agent shortcut: when a Chrome extension is connected and site is Oson
         # (which is IP-blocked on the server), skip the server-side browser entirely
-        # and fetch directly through the user's real Chrome. This bypasses both the
-        # IP block and the robots.txt check that would also fail from this IP.
+        # and fetch directly through the user's real Chrome.
         if site == 'oson' and self.agent_bus and self.agent_bus.connected() and page is None:
-            agent_url = 'https://osonapteka.uz/search?' + urlencode({'q': search_term(product, site='oson')})
-            log.info('agent shortcut site=oson product_id=%s url=%.120s', product.get('id'), agent_url)
-            result = await self.agent_bus.fetch(agent_url, site)
-            if result and result.get('html'):
-                html = result['html']
-                final_url = result.get('url', agent_url)
-                from .oson_cards import parse_oson_cards
-                offers = parse_oson_jsonld(html, final_url)
-                method = 'agent_json_ld'
-                if not offers:
-                    offers = parse_oson_cards(html, final_url)
-                    method = 'agent_visible_cards'
-                if offers:
-                    return offers, {'status': 'ok', 'url': final_url, 'pages': 1,
-                                    'extraction_method': method,
-                                    'scope': 'Oson prices via Chrome extension agent (user browser)'}
-                body_text = BeautifulSoup(html, 'html.parser').get_text(' ', strip=True)
-                state = classify_text(body_text)
-                if state == 'no_results':
-                    return [], {'status': 'no_results', 'url': final_url, 'pages': 1}
-                log.warning('agent shortcut returned page but no offers parsed site=oson state=%s', state)
-                # Fall through to server-side browser as last resort
-            else:
-                log.warning('agent shortcut failed or timed out for oson product_id=%s', product.get('id'))
-                # Fall through to server-side browser
+            offers, details = await agent_search_oson(self.agent_bus, product, use_ai=use_ai)
+            if details.get('status') in ('ok', 'no_results'):
+                return offers, details
+            # Fall through to server-side browser as last resort
 
         own_page = page is None
         page = page or await self.context.new_page()
