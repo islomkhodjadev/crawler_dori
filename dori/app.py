@@ -436,4 +436,77 @@ def create_app(db_path=None):
         return Response('\ufeff'+out.getvalue(),media_type='text/csv; charset=utf-8',
                         headers={'Content-Disposition':'attachment; filename="dori-candidates.csv"'})
 
+    @app.get('/api/export/xlsx')
+    def export_xlsx(run_id: int | None = None):
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment
+        from openpyxl.utils import get_column_letter
+        report = store.report(run_id)
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = '\u0426\u0435\u043d\u044b'
+        header_font = Font(bold=True, color='FFFFFF')
+        header_fill = PatternFill('solid', fgColor='1D6B55')
+        headers = ['\u0422\u043e\u0432\u0430\u0440','\u041f\u0440\u043e\u0438\u0437\u0432\u043e\u0434\u0438\u0442\u0435\u043b\u044c','\u041d\u0430\u0448\u0430 \u0446\u0435\u043d\u0430','Arzon','Oson','\u0420\u044b\u043d\u043e\u0447\u043d\u0430\u044f \u0446\u0435\u043d\u0430','\u041e\u043f\u0442\u0438\u043c\u0430\u043b\u044c\u043d\u0430\u044f \u0446\u0435\u043d\u0430','\u041a \u043d\u0430\u0448\u0435\u0439 \u0446\u0435\u043d\u0435 %','\u0421\u0442\u0430\u0442\u0443\u0441']
+        for col, h in enumerate(headers, 1):
+            cell = ws.cell(1, col, h)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal='center')
+        ws.row_dimensions[1].height = 20
+        for entry in report['products']:
+            p, e = entry['product'], entry['estimate']
+            delta = e.get('invoice_delta_percent')
+            opt = entry['advice']['price'] if entry.get('advice') else None
+            row = [
+                p['name'], p.get('manufacturer',''),
+                p.get('invoice_price'), e['per_site'].get('arzon'), e['per_site'].get('oson'),
+                e.get('value'), opt,
+                f"{delta:+.1f}%" if delta is not None else '',
+                e.get('status',''),
+            ]
+            ws.append(["'" + v if isinstance(v, str) and v.lstrip().startswith(('=','+','-','@')) else v for v in row])
+        # Column widths
+        for col, width in zip(range(1, 10), [45, 25, 14, 14, 14, 14, 16, 12, 14]):
+            ws.column_dimensions[get_column_letter(col)].width = width
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return Response(buf.read(), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                        headers={'Content-Disposition': 'attachment; filename="dori-prices.xlsx"'})
+
+    @app.get('/api/export/candidates/xlsx')
+    def export_candidates_xlsx(run_id: int | None = None):
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment
+        from openpyxl.utils import get_column_letter
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = '\u0412\u0441\u0435 \u043f\u0440\u0435\u0434\u043b\u043e\u0436\u0435\u043d\u0438\u044f'
+        header_font = Font(bold=True, color='FFFFFF')
+        header_fill = PatternFill('solid', fgColor='1D6B55')
+        headers = ['ID \u0442\u043e\u0432\u0430\u0440\u0430','\u0422\u043e\u0432\u0430\u0440','\u0421\u0430\u0439\u0442','\u041d\u0430\u0437\u0432\u0430\u043d\u0438\u0435 \u043d\u0430 \u0441\u0430\u0439\u0442\u0435','\u041f\u0440\u043e\u0438\u0437\u0432\u043e\u0434\u0438\u0442\u0435\u043b\u044c','\u0426\u0435\u043d\u0430 (\u0441\u0443\u043c)',
+                   '\u0421\u0442\u0430\u0442\u0443\u0441 \u0441\u043e\u0432\u043f\u0430\u0434\u0435\u043d\u0438\u044f','\u041e\u0446\u0435\u043d\u043a\u0430','\u041f\u0440\u0438\u0447\u0438\u043d\u044b','\u0414\u0430\u0442\u0430','\u0421\u0441\u044b\u043b\u043a\u0430']
+        for col, h in enumerate(headers, 1):
+            cell = ws.cell(1, col, h)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal='center')
+        ws.row_dimensions[1].height = 20
+        for entry in store.report(run_id)['products']:
+            for offer in entry['offers']:
+                row = [entry['product']['id'], entry['product']['name'], offer['site'],
+                       offer['name'], offer.get('manufacturer',''),
+                       offer.get('manual_price') or offer.get('observed_price', offer['price']),
+                       offer['match_status'], round(offer['score'], 2),
+                       ' | '.join(offer['reasons']), offer.get('observed_at','')[:10], offer['url']]
+                ws.append(["'" + v if isinstance(v, str) and v.lstrip().startswith(('=','+','-','@')) else v for v in row])
+        for col, width in zip(range(1, 12), [8, 40, 10, 45, 25, 14, 16, 8, 50, 12, 50]):
+            ws.column_dimensions[get_column_letter(col)].width = width
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return Response(buf.read(), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                        headers={'Content-Disposition': 'attachment; filename="dori-candidates.xlsx"'})
+
     return app

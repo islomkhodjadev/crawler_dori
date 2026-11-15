@@ -263,7 +263,9 @@ function renderRuns() {
   $('#cancel-run').hidden = !r || !['queued', 'running', 'waiting_for_human'].includes(r.status);
   const query = currentRun ? '?run_id=' + currentRun : '';
   $('#export').href = '/api/export' + query;
+  $('#export-xlsx').href = '/api/export/xlsx' + query;
   $('#export-candidates').href = '/api/export/candidates' + query;
+  $('#export-candidates-xlsx').href = '/api/export/candidates/xlsx' + query;
 }
 async function refreshRuns() {
   runs = await api('/api/runs');
