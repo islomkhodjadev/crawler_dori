@@ -47,7 +47,8 @@ class BrowserAdmin:
                 session.message = 'Connection check expired. Check again before starting.'
                 session.ready.clear()
         return {site: ({'status': s.status, 'message': s.message, 'checked_at': s.checked_at,
-                        'url': s.page.url, 'busy': s.busy, 'opened': True}
+                        'url': s.page.url, 'busy': s.busy, 'opened': True,
+                        'verification':getattr(s.crawler,'verification',{'state':'idle','message':''})}
                        if (s := self.sessions.get(site)) else
                        {'status': 'closed', 'message': 'Open the browser to begin.', 'opened': False, 'busy': False})
                 for site in SITES}

@@ -1,6 +1,7 @@
 // Interface text in three languages. Match comments from the server stay in Russian.
 const I18N = {
   ru: {
+    'state.loading': 'Загрузка', 'state.verifying': 'Автоматическая проверка', 'state.backoff': 'Ожидание повтора', 'state.verification_timeout': 'Время проверки истекло',
     'brand.tag': 'Сравнение цен аптек', 'run.label': 'Сбор', 'run.none': 'Сборов ещё не было', 'top.logout': 'Выйти', 'currency': 'сум',
     'tab.products': 'Товары', 'tab.connect': 'Подключение', 'tab.collect': 'Сбор цен', 'tab.review': 'Проверка', 'tab.results': 'Результаты',
     'next.go': 'Перейти →',
@@ -71,6 +72,7 @@ const I18N = {
     'price.edited': 'исправлено вручную · было {p}', 'price.saved': 'Цена сохранена.', 'price.invalid': 'Введите цену больше нуля.',
   },
   uz: {
+    'state.loading': 'Yuklanmoqda', 'state.verifying': 'Avtomatik tekshiruv', 'state.backoff': 'Qayta urinish kutilmoqda', 'state.verification_timeout': 'Tekshiruv vaqti tugadi',
     'brand.tag': 'Dorixona narxlarini solishtirish', 'run.label': "Yig'ish", 'run.none': "Hali yig'ish bo'lmagan", 'top.logout': 'Chiqish', 'currency': "so'm",
     'tab.products': 'Mahsulotlar', 'tab.connect': 'Ulanish', 'tab.collect': "Narx yig'ish", 'tab.review': 'Tekshirish', 'tab.results': 'Natijalar',
     'next.go': "O'tish →",
@@ -141,6 +143,7 @@ const I18N = {
     'price.edited': "qo'lda tuzatilgan · avval {p}", 'price.saved': 'Narx saqlandi.', 'price.invalid': 'Noldan katta narx kiriting.',
   },
   en: {
+    'state.loading': 'Loading', 'state.verifying': 'Automatic verification', 'state.backoff': 'Waiting to retry', 'state.verification_timeout': 'Verification timed out',
     'brand.tag': 'Pharmacy price comparison', 'run.label': 'Collection', 'run.none': 'No collections yet', 'top.logout': 'Sign out', 'currency': 'UZS',
     'tab.products': 'Products', 'tab.connect': 'Connect sites', 'tab.collect': 'Collect prices', 'tab.review': 'Review', 'tab.results': 'Results',
     'next.go': 'Go →',

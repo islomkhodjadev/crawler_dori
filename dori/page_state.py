@@ -15,7 +15,7 @@ def classify_text(text):
     if any(x in body for x in ('verify you are human','подтвердите, что вы человек','я не робот',
                               'i am not a robot','проверка браузера','complete the captcha')):
         return 'human_verification'
-    if any(x in body for x in ('access forbidden','access denied','security detection','доступ запрещен','доступ запрещён')):
+    if any(x in body for x in ('access forbidden','access denied','security detection','debugging detected','доступ запрещен','доступ запрещён')):
         return 'access_blocked'
     if any(x in body for x in ('too many requests','слишком много запросов','rate limit')):
         return 'rate_limited'

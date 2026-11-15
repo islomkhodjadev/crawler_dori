@@ -121,13 +121,15 @@ async function loadProducts() {
 
 /* ---------- 2. connect ---------- */
 function chosenSites() { return [...sites]; }
-function connectionsReady() { const list = chosenSites(); return list.length > 0 && list.every(s => sourceState[s]?.status === 'connected'); }
+function connectionsReady() { const list = chosenSites(); return list.length > 0 && list.every(s => sourceState[s]?.status === 'connected' && !sourceState[s]?.busy); }
 function renderBrowsers() {
   $('#browser-cards').innerHTML = ['arzon', 'oson'].map(site => {
     const s = sourceState[site] || {status: 'closed', message: '', opened: false};
-    const note = s.status === 'connected' && s.checked_at ? t('connect.checkedAt', {t: when(s.checked_at)}) : s.message;
-    return `<article class="card site ${stateClass(s.status)}">
-      <div class="site-head"><h3>${siteName(site)}</h3><span class="pill ${stateClass(s.status)}">${esc(stateLabel(s.status))}</span></div>
+    const verifying = s.busy && ['loading','verifying','backoff'].includes(s.verification?.state);
+    const displayState = verifying ? s.verification.state : s.status;
+    const note = verifying ? s.verification.message : s.status === 'connected' && s.checked_at ? t('connect.checkedAt', {t: when(s.checked_at)}) : s.message;
+    return `<article class="card site ${stateClass(displayState)}">
+      <div class="site-head"><h3>${siteName(site)}</h3><span class="pill ${stateClass(displayState)}">${esc(stateLabel(displayState))}</span></div>
       <p class="muted">${esc(note || '')}</p>
       <div class="row-actions">
         <button data-browser-open="${site}" class="${s.status === 'connected' ? 'ghost' : ''}">${t('connect.open')}</button>
