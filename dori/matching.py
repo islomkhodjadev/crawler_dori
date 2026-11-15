@@ -128,18 +128,22 @@ def search_term(product, site=None):
     if product.get('barcode'):
         return product['barcode']
     # Include brand words until dosage/form so that variants can be compared locally.
-    # Split at form keywords OR at a space-preceded digit (dosage), but NOT at digits
-    # that are glued to a letter (e.g. "Д3", "B12", "D3" are part of the drug name).
     name = product['name']
-    parts = re.split(r'\b(?:таб|капс|спрей|крем|гель|капли|сироп|мазь|р-р|раствор)\b|(?<=\s)\d', name, maxsplit=1, flags=re.I)
+    parts = re.split(r'\b(?:таб|капс|спрей|крем|гель|капли|сироп|мазь|р-р|раствор)\b|\d', name, maxsplit=1, flags=re.I)
     term = parts[0].strip(' ,.-') or name.split()[0]
     if site == 'oson':
         # Oson's search engine maps short Latin-only tokens (e.g. "NOW") to Cyrillic near-matches.
         # Drop leading Latin-only words so the Cyrillic drug name drives the search.
+        # Then re-attach any letter+digit suffix (e.g. "Д3") that the split cut off.
         words = term.split()
         cyrillic_start = next((i for i, w in enumerate(words) if re.search(r'[а-яёА-ЯЁ]', w)), None)
         if cyrillic_start and cyrillic_start > 0:
             term = ' '.join(words[cyrillic_start:])
+        # If the original name has a letter+digit token right after the term, re-attach it
+        # (e.g. "ВИТАМИН Д" → "ВИТАМИН Д3" when the name contains "Д3").
+        m = re.search(re.escape(term.rstrip()) + r'(\d+)', name, re.I)
+        if m:
+            term = term.rstrip() + m.group(1)
     return term
 
 
