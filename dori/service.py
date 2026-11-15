@@ -6,7 +6,7 @@ from .logs import get
 log = get('service')
 
 
-async def crawl(store, run_id, products, sites=('arzon', 'oson'), admin=None, use_ai=None):
+async def crawl(store, run_id, products, sites=('arzon', 'oson'), admin=None, use_ai=None, agent_bus=None):
     log.info('crawl run=%s start products=%d sites=%s ai=%s', run_id, len(products), list(sites), use_ai)
     store.update_run(run_id, status='running', sites=json.dumps(list(sites)), phase='Starting browsers')
     async def collect(browser):
@@ -40,7 +40,7 @@ async def crawl(store, run_id, products, sites=('arzon', 'oson'), admin=None, us
             admin.collecting = True
             await collect(None)
         else:
-            async with BrowserCrawler() as browser:
+            async with BrowserCrawler(agent_bus=agent_bus) as browser:
                 await collect(browser)
         log.info('crawl run=%s completed', run_id)
         store.update_run(run_id, status='completed', finished_at=now(), error=None, active_product_id=None, active_site=None, phase='Completed')

@@ -141,9 +141,10 @@ def parse_oson_jsonld(html, page_url):
 
 
 class BrowserCrawler:
-    def __init__(self, profile=None, interactive=False):
+    def __init__(self, profile=None, interactive=False, agent_bus=None):
         self.profile = profile
         self.interactive = interactive
+        self.agent_bus = agent_bus  # AgentBus instance for IP-blocked sites
         self.delay = max(2, float(os.getenv('CRAWL_DELAY_SECONDS', '3')))
         self.max_pages = max(1, min(10, int(os.getenv('CRAWL_MAX_PAGES', '3'))))
         self.robots = {}
@@ -421,6 +422,30 @@ class BrowserCrawler:
         except (VerificationRequired, AccessBlocked) as exc:
             if isinstance(exc,CrawlPermissionError):
                 raise
+            # Try the Chrome extension agent: user's real browser, their IP, no CDP.
+            if self.agent_bus and self.agent_bus.connected() and site == 'oson':
+                from .matching import search_term
+                agent_url = 'https://osonapteka.uz/search?' + urlencode({'q': search_term(product)})
+                log.info('agent fallback site=%s product_id=%s url=%.120s', site, product.get('id'), agent_url)
+                result = await self.agent_bus.fetch(agent_url, site)
+                if result and result.get('html'):
+                    html = result['html']
+                    final_url = result.get('url', agent_url)
+                    from .oson_cards import parse_oson_cards
+                    offers = parse_oson_jsonld(html, final_url)
+                    method = 'agent_json_ld'
+                    if not offers:
+                        offers = parse_oson_cards(html, final_url)
+                        method = 'agent_visible_cards'
+                    if offers:
+                        return offers, {'status': 'ok', 'url': final_url, 'pages': 1,
+                                        'extraction_method': method,
+                                        'scope': 'Oson prices via Chrome extension agent (user browser)'}
+                    body_text = BeautifulSoup(html, 'html.parser').get_text(' ', strip=True)
+                    state = classify_text(body_text)
+                    if state == 'no_results':
+                        return [], {'status': 'no_results', 'url': final_url, 'pages': 1}
+                    log.warning('agent returned page but no offers parsed site=%s state=%s', site, state)
             if use_ai:
                 # Let AI assess the actual page before asking a person to act.
                 return await self.ai_extract(page,site)

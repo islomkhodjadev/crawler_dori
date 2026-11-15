@@ -1,6 +1,6 @@
 // Admin panel: a five-step workflow (products → connect → collect → review → results) in RU / UZ / EN.
 let sourceState = {}, activeRun = false, viewerSocket = null, viewerSite = null;
-let products = [], selected = new Set(), currentRun = null, currentReport = null, aiConfigured = false;
+let products = [], selected = new Set(), currentRun = null, currentReport = null, aiConfigured = false, agentConnected = false;
 let runs = [], stats = null, expanded = new Set(), openRejected = new Set(), sites = new Set(['arzon', 'oson']);
 let lastReportJson = '', lastStatsJson = '', tab = 'products', editingPrice = null;
 const SITE_NAMES = {arzon: 'ArzonApteka', oson: 'OsonApteka'};
@@ -44,6 +44,8 @@ function applyLanguage() {
     .map(v => `<option value="${v}">${esc(t('filter.' + v))}</option>`).join('');
   $('#report-filter').value = filter;
   $('#ai-availability').textContent = t(aiConfigured ? 'connect.aiOn' : 'connect.aiOff');
+  const badge = $('#agent-badge');
+  if (badge) badge.textContent = t(agentConnected ? 'agent.connected' : 'agent.disconnected');
   renderAll();
 }
 function showTab(name) {
@@ -497,11 +499,20 @@ $('#remote-control').onpaste = e => { e.preventDefault(); sendBrowser({type: 'te
   try {
     const h = await api('/api/health');
     aiConfigured = h.ai_configured;
+    agentConnected = Boolean(h.agent_connected);
     $('#use-ai').disabled = !aiConfigured;
     $('#use-ai').checked = Boolean(h.ai_default_enabled);
     $('#logout').hidden = !h.admin_password_set;
     applyLanguage();
     await loadProducts(); await refreshBrowsers(); await refreshRuns();
   } catch (x) { toast(x.message); }
-  setInterval(async () => { try { await refreshBrowsers(); await refreshRuns(); } catch {} }, 4000);
+  setInterval(async () => {
+    try {
+      const h = await api('/api/health');
+      agentConnected = Boolean(h.agent_connected);
+      const badge = $('#agent-badge');
+      if (badge) badge.textContent = t(agentConnected ? 'agent.connected' : 'agent.disconnected');
+    } catch {}
+    try { await refreshBrowsers(); await refreshRuns(); } catch {};
+  }, 4000);
 })();

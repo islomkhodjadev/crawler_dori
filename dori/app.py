@@ -19,6 +19,7 @@ from .service import crawl
 from .storage import Store
 from .browser_admin import BrowserAdmin, SITES
 from .auth import AdminAuth
+from .agent import AgentBus
 from .logs import get, setup as setup_logging
 
 log = get('http')
@@ -71,6 +72,7 @@ def create_app(db_path=None):
     run_tasks = {}
     browsers = BrowserAdmin()
     auth = AdminAuth()
+    agent_bus = AgentBus()
 
     @asynccontextmanager
     async def lifespan(app):
@@ -123,7 +125,9 @@ def create_app(db_path=None):
         import os
         return {'ok': True, 'ai_configured': bool(os.getenv('OPENAI_API_KEY')),
                 'ai_default_enabled': bool(os.getenv('OPENAI_API_KEY')),
-                'admin_password_set': bool(auth.password)}
+                'admin_password_set': bool(auth.password),
+                'agent_connected': agent_bus.connected() > 0,
+                'agent_count': agent_bus.connected()}
 
     @app.post('/api/import')
     async def upload(file: UploadFile = File(...)):
@@ -173,7 +177,7 @@ def create_app(db_path=None):
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
         task = asyncio.create_task(crawl(store, run_id, products, tuple(dict.fromkeys(body.sites)),
-                                         admin=browsers, use_ai=use_ai))
+                                         admin=browsers, use_ai=use_ai, agent_bus=agent_bus))
         run_tasks[run_id] = task
         tasks.add(task)
         task.add_done_callback(tasks.discard)
@@ -232,6 +236,48 @@ def create_app(db_path=None):
         from .adapters import now
         store.update_run(run_id, status='interrupted', finished_at=now(), active_product_id=None, active_site=None, phase='Cancelled', error='Collection cancelled by admin')
         return {'ok': True}
+
+    # ------------------------------------------------------------------ agent --
+    @app.get('/api/agent/status')
+    def agent_status():
+        """How many Chrome extensions are currently connected."""
+        return {'connected': agent_bus.connected()}
+
+    @app.get('/api/agent/extension.zip')
+    def agent_extension_zip():
+        """Serve the Chrome extension as a downloadable zip."""
+        import io, zipfile
+        ext_dir = Path(__file__).parent.parent / 'chrome-extension'
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for f in sorted(ext_dir.rglob('*')):
+                if f.is_file() and not f.name.startswith('.'):
+                    zf.write(f, f.relative_to(ext_dir))
+        buf.seek(0)
+        return Response(buf.read(), media_type='application/zip',
+                        headers={'Content-Disposition': 'attachment; filename="dori-agent.zip"'})
+
+    @app.websocket('/api/agent/ws')
+    async def agent_ws(websocket: WebSocket, password: str = ''):
+        """Chrome extension connects here. Auth via ?password= query param."""
+        from urllib.parse import urlparse
+        origin = websocket.headers.get('origin', '')
+        host = websocket.headers.get('host', '')
+        # Allow connection from the extension (chrome-extension:// origin) or same host.
+        origin_ok = (not origin
+                     or urlparse(origin).scheme == 'chrome-extension'
+                     or urlparse(origin).netloc == host)
+        if not origin_ok:
+            await websocket.close(code=1008, reason='Cross-origin')
+            return
+        if auth.password and not __import__('secrets').compare_digest(password.encode(), auth.password.encode()):
+            await websocket.close(code=1008, reason='Unauthorized')
+            log.warning('agent ws rejected wrong password origin=%s', origin)
+            return
+        await websocket.accept()
+        await agent_bus.attach(websocket)
+
+    # ------------------------------------------------------------------ /agent --
 
     @app.get('/api/statistics')
     def statistics(run_id: int | None = None):
