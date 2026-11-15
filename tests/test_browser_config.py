@@ -10,12 +10,23 @@ def test_default_keeps_bundled_chromium():
     assert launch_options()=={'headless':True}
 
 
-def test_interactive_overrides_headless_env(monkeypatch):
-    # Even with DORI_HEADLESS=true, interactive (user-controlled viewer) must be non-headless
-    # so the site sees a real browser and SafeLine challenges can be solved.
+def test_interactive_with_display_runs_visible(monkeypatch):
+    # On a machine with a display (macOS or X11), interactive opens a real window.
     monkeypatch.setenv('DORI_HEADLESS','true')
+    monkeypatch.setattr('dori.browser_config._has_display', lambda: True)
     opts = launch_options(interactive=True)
     assert opts['headless'] is False
+    assert '--headless=new' not in opts.get('args', [])
+
+
+def test_interactive_without_display_uses_headless_new(monkeypatch):
+    # On a headless server Chrome's --headless=new mode is used so the full
+    # rendering engine runs without needing a physical display.
+    monkeypatch.setenv('DORI_HEADLESS','true')
+    monkeypatch.setattr('dori.browser_config._has_display', lambda: False)
+    opts = launch_options(interactive=True)
+    assert opts['headless'] is True
+    assert '--headless=new' in opts.get('args', [])
 
 
 def test_non_interactive_respects_headless_env(monkeypatch):
