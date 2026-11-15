@@ -25,6 +25,11 @@ def norm(s):
 
 def attributes(name):
     s = unicodedata.normalize('NFKC', name).casefold().replace(',', '.')
+    # Strip parenthetical manufacturer/brand annotations like "(NOW Vitamin D-3)" or "(Now Foods (США))"
+    # that sites append to the drug name — they pollute the brand score.
+    # Two passes handles one level of nesting: inner first, then outer.
+    s = re.sub(r'\([^()]{2,60}\)', ' ', s)
+    s = re.sub(r'\([^()]{2,60}\)', ' ', s)
     # Collapse grouped numeric thousands such as "5 000МЕ" before unit extraction.
     s = re.sub(r'(\d)\s+(?=\d{3}(?:\D|$))', r'\1', s)
     count = re.search(r'(?:№|\b[nn]o?\.?\s*|#)\s*(\d+)(?:\s*[xх*]\s*(\d+))?', s)
@@ -119,13 +124,21 @@ def match(product, offer):
     return dict(status=status, score=score, reasons=conflicts + missing + reasons or ['name and package attributes agree'])
 
 
-def search_term(product):
+def search_term(product, site=None):
     if product.get('barcode'):
         return product['barcode']
     # Include brand words until dosage/form so that variants can be compared locally.
     name = product['name']
     parts = re.split(r'\b(?:таб|капс|спрей|крем|гель|капли|сироп|мазь|р-р|раствор)\b|\d', name, maxsplit=1, flags=re.I)
-    return parts[0].strip(' ,.-') or name.split()[0]
+    term = parts[0].strip(' ,.-') or name.split()[0]
+    if site == 'oson':
+        # Oson's search engine maps short Latin-only tokens (e.g. "NOW") to Cyrillic near-matches.
+        # Drop leading Latin-only words so the Cyrillic drug name drives the search.
+        words = term.split()
+        cyrillic_start = next((i for i, w in enumerate(words) if re.search(r'[а-яёА-ЯЁ]', w)), None)
+        if cyrillic_start and cyrillic_start > 0:
+            term = ' '.join(words[cyrillic_start:])
+    return term
 
 
 def summarize_matches(offers, sources):

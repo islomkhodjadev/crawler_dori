@@ -58,7 +58,7 @@ async def agent_search_oson(agent_bus, product, use_ai=None):
     """Fetch Oson search results through the connected Chrome extension agent."""
     from .matching import search_term
     from .oson_cards import parse_oson_cards
-    agent_url = 'https://osonapteka.uz/search?' + urlencode({'q': search_term(product)})
+    agent_url = 'https://osonapteka.uz/search?' + urlencode({'q': search_term(product, site='oson')})
     log.info('agent shortcut site=oson product_id=%s url=%.120s', product.get('id'), agent_url)
     result = await agent_bus.fetch(agent_url, 'oson')
     if result and result.get('html'):
@@ -370,7 +370,7 @@ class BrowserCrawler:
         # and fetch directly through the user's real Chrome. This bypasses both the
         # IP block and the robots.txt check that would also fail from this IP.
         if site == 'oson' and self.agent_bus and self.agent_bus.connected() and page is None:
-            agent_url = 'https://osonapteka.uz/search?' + urlencode({'q': search_term(product)})
+            agent_url = 'https://osonapteka.uz/search?' + urlencode({'q': search_term(product, site='oson')})
             log.info('agent shortcut site=oson product_id=%s url=%.120s', product.get('id'), agent_url)
             result = await self.agent_bus.fetch(agent_url, site)
             if result and result.get('html'):
