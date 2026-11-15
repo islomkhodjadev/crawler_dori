@@ -128,8 +128,10 @@ def search_term(product, site=None):
     if product.get('barcode'):
         return product['barcode']
     # Include brand words until dosage/form so that variants can be compared locally.
+    # Split at form keywords OR at a space-preceded digit (dosage), but NOT at digits
+    # that are glued to a letter (e.g. "Д3", "B12", "D3" are part of the drug name).
     name = product['name']
-    parts = re.split(r'\b(?:таб|капс|спрей|крем|гель|капли|сироп|мазь|р-р|раствор)\b|\d', name, maxsplit=1, flags=re.I)
+    parts = re.split(r'\b(?:таб|капс|спрей|крем|гель|капли|сироп|мазь|р-р|раствор)\b|(?<=\s)\d', name, maxsplit=1, flags=re.I)
     term = parts[0].strip(' ,.-') or name.split()[0]
     if site == 'oson':
         # Oson's search engine maps short Latin-only tokens (e.g. "NOW") to Cyrillic near-matches.
