@@ -10,6 +10,21 @@ def test_default_keeps_bundled_chromium():
     assert launch_options()=={'headless':True}
 
 
+def test_interactive_overrides_headless_env(monkeypatch):
+    # Even with DORI_HEADLESS=true, interactive (user-controlled viewer) must be non-headless
+    # so the site sees a real browser and SafeLine challenges can be solved.
+    monkeypatch.setenv('DORI_HEADLESS','true')
+    opts = launch_options(interactive=True)
+    assert opts['headless'] is False
+
+
+def test_non_interactive_respects_headless_env(monkeypatch):
+    monkeypatch.setenv('DORI_HEADLESS','true')
+    assert launch_options()['headless'] is True
+    monkeypatch.setenv('DORI_HEADLESS','false')
+    assert launch_options()['headless'] is False
+
+
 def test_branded_chrome_visible_and_proxy(monkeypatch):
     monkeypatch.setenv('DORI_BROWSER_CHANNEL','chrome')
     monkeypatch.setenv('DORI_HEADLESS','false')

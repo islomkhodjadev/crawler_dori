@@ -155,7 +155,7 @@ class BrowserCrawler:
         self.max_backoff=max(0,min(300,float(os.getenv('DORI_MAX_BACKOFF','30'))))
 
     async def __aenter__(self):
-        options = launch_options()
+        options = launch_options(interactive=self.interactive)
         self.playwright = await async_playwright().start()
         try:
             profile = self.profile or os.getenv('DORI_BROWSER_PROFILE')

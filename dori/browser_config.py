@@ -9,8 +9,11 @@ def browser_channel():
     return channel
 
 
-def launch_options(visible=False):
-    options={'headless':False if visible else os.getenv('DORI_HEADLESS','true').lower()!='false'}
+def launch_options(visible=False, interactive=False):
+    # Interactive sessions (user-controlled browser viewer) always run non-headless so
+    # that the site sees a real browser. DORI_HEADLESS only applies to automated crawls.
+    headless = False if (visible or interactive) else os.getenv('DORI_HEADLESS','true').lower()!='false'
+    options={'headless':headless}
     if browser_channel()=='chrome':options['channel']='chrome'
     if os.getenv('DORI_BROWSER_PROXY'):
         options['proxy']={'server':os.environ['DORI_BROWSER_PROXY']}
