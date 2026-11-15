@@ -22,6 +22,7 @@
   <button data-tab="collect"><b>3</b><span data-i18n="tab.collect"></span><em id="badge-collect"></em></button>
   <button data-tab="review"><b>4</b><span data-i18n="tab.review"></span><em id="badge-review"></em></button>
   <button data-tab="results"><b>5</b><span data-i18n="tab.results"></span><em id="badge-results"></em></button>
+  <button data-tab="help"><b>?</b><span data-i18n="tab.help"></span></button>
 </nav>
 
 <div class="next-step" id="next-step"><span id="next-text"></span><button id="next-go" data-i18n="next.go"></button></div>
@@ -144,6 +145,89 @@
         <tbody id="reports"></tbody>
       </table></div>
       <p id="results-empty" class="empty" hidden></p>
+    </div>
+  </section>
+  <!-- Help / Documentation -->
+  <section class="panel" data-panel="help" hidden>
+    <div class="card help-page">
+      <h2 data-i18n="help.howTitle"></h2>
+      <p class="muted" data-i18n="help.howIntro"></p>
+
+      <div class="help-flow">
+        <div class="help-box"><span data-i18n="help.flow1"></span></div>
+        <div class="help-arrow">→</div>
+        <div class="help-box"><span data-i18n="help.flow2"></span></div>
+        <div class="help-arrow">→</div>
+        <div class="help-box"><span data-i18n="help.flow3"></span></div>
+        <div class="help-arrow">→</div>
+        <div class="help-box"><span data-i18n="help.flow4"></span></div>
+      </div>
+
+      <div class="help-callout">
+        <strong data-i18n="help.whyExtTitle"></strong>
+        <span data-i18n="help.whyExt"></span>
+      </div>
+    </div>
+
+    <!-- Chrome extension install -->
+    <div class="card">
+      <h3 data-i18n="help.extInstallTitle"></h3>
+      <ol class="help-steps">
+        <li><strong data-i18n="help.extStep1h"></strong> — <span data-i18n="help.extStep1"></span></li>
+        <li><strong data-i18n="help.extStep2h"></strong> — <span data-i18n="help.extStep2"></span></li>
+        <li><strong data-i18n="help.extStep3h"></strong> — <span data-i18n="help.extStep3"></span> <code>chrome://extensions</code></li>
+        <li><strong data-i18n="help.extStep4h"></strong> — <span data-i18n="help.extStep4"></span></li>
+        <li><strong data-i18n="help.extStep5h"></strong> — <span data-i18n="help.extStep5"></span></li>
+        <li><strong data-i18n="help.extStep6h"></strong> — <span data-i18n="help.extStep6"></span></li>
+      </ol>
+    </div>
+
+    <!-- Connect extension -->
+    <div class="card">
+      <h3 data-i18n="help.extConnectTitle"></h3>
+      <ol class="help-steps">
+        <li><strong data-i18n="help.conStep1h"></strong> — <span data-i18n="help.conStep1"></span></li>
+        <li><strong data-i18n="help.conStep2h"></strong> — <span data-i18n="help.conStep2"></span> <code>https://predictor.03dorixona.uz</code></li>
+        <li><strong data-i18n="help.conStep3h"></strong> — <span data-i18n="help.conStep3"></span></li>
+        <li><strong data-i18n="help.conStep4h"></strong> — <span data-i18n="help.conStep4"></span></li>
+      </ol>
+    </div>
+
+    <!-- ArzonApteka -->
+    <div class="card">
+      <h3 data-i18n="help.arzonTitle"></h3>
+      <div class="help-warn" data-i18n="help.arzonGeo"></div>
+      <ol class="help-steps">
+        <li><strong data-i18n="help.arzonStep1h"></strong> — <span data-i18n="help.arzonStep1"></span></li>
+        <li><strong data-i18n="help.arzonStep2h"></strong> — <span data-i18n="help.arzonStep2"></span></li>
+        <li><strong data-i18n="help.arzonStep3h"></strong> — <span data-i18n="help.arzonStep3"></span></li>
+        <li><strong data-i18n="help.arzonStep4h"></strong> — <span data-i18n="help.arzonStep4"></span></li>
+      </ol>
+    </div>
+
+    <!-- Collect workflow -->
+    <div class="card">
+      <h3 data-i18n="help.collectTitle"></h3>
+      <ol class="help-steps">
+        <li><strong data-i18n="help.colStep1h"></strong> — <span data-i18n="help.colStep1"></span></li>
+        <li><strong data-i18n="help.colStep2h"></strong> — <span data-i18n="help.colStep2"></span></li>
+        <li><strong data-i18n="help.colStep3h"></strong> — <span data-i18n="help.colStep3"></span></li>
+        <li><strong data-i18n="help.colStep4h"></strong> — <span data-i18n="help.colStep4"></span></li>
+        <li><strong data-i18n="help.colStep5h"></strong> — <span data-i18n="help.colStep5"></span></li>
+        <li><strong data-i18n="help.colStep6h"></strong> — <span data-i18n="help.colStep6"></span></li>
+      </ol>
+    </div>
+
+    <!-- FAQ -->
+    <div class="card">
+      <h3 data-i18n="help.faqTitle"></h3>
+      <dl class="help-faq">
+        <dt data-i18n="help.faq1q"></dt><dd data-i18n="help.faq1a"></dd>
+        <dt data-i18n="help.faq2q"></dt><dd data-i18n="help.faq2a"></dd>
+        <dt data-i18n="help.faq3q"></dt><dd data-i18n="help.faq3a"></dd>
+        <dt data-i18n="help.faq4q"></dt><dd data-i18n="help.faq4a"></dd>
+        <dt data-i18n="help.faq5q"></dt><dd data-i18n="help.faq5a"></dd>
+      </dl>
     </div>
   </section>
 </main>

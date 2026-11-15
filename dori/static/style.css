@@ -180,6 +180,23 @@ button.link.small{font-size:12px;padding:0 2px}
 .agent-profile .label{color:var(--muted);font-size:12px}
 .agent-actions{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
 
+/* help / documentation tab */
+.help-page h2{margin:0 0 8px;font-size:18px}
+.help-page .muted{margin:0 0 20px}
+.help-flow{display:flex;align-items:center;gap:0;flex-wrap:wrap;background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:16px;margin:0 0 16px}
+.help-box{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:13px;font-weight:600;text-align:center;flex:1;min-width:90px}
+.help-arrow{color:var(--accent);font-size:18px;padding:0 8px;flex-shrink:0}
+.help-callout{background:var(--hover);border-left:4px solid var(--accent);border-radius:0 8px 8px 0;padding:12px 16px;font-size:13px;line-height:1.6}
+.help-callout strong{display:block;margin-bottom:4px}
+.help-warn{background:#fff8e1;border-left:4px solid #f9a825;border-radius:0 8px 8px 0;padding:10px 14px;font-size:13px;margin:0 0 16px;line-height:1.6;color:#5d4037}
+.card h3{margin:0 0 14px;font-size:15px;font-weight:700}
+.help-steps{margin:0;padding:0 0 0 20px;display:flex;flex-direction:column;gap:10px}
+.help-steps li{font-size:14px;line-height:1.6;color:var(--ink)}
+.help-steps li strong{color:var(--ink)}
+.help-faq{display:flex;flex-direction:column;gap:14px;margin:0}
+.help-faq dt{font-size:14px;font-weight:700;color:var(--ink)}
+.help-faq dd{margin:4px 0 0 0;font-size:13px;color:var(--muted);line-height:1.6}
+
 @media(max-width:820px){
   .topbar{padding:10px 16px;gap:10px}
   .run-picker{order:3;width:100%} .run-picker select{flex:1;max-width:none}
