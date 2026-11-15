@@ -15,7 +15,10 @@ async def crawl(store, run_id, products, sites=('arzon', 'oson'), admin=None, us
                 store.update_run(run_id, active_product_id=product['id'], active_site=site, phase='Searching and extracting prices')
                 while True:
                     try:
-                        if admin:
+                        if admin and site == 'oson' and agent_bus and agent_bus.connected():
+                            from .adapters import agent_search_oson
+                            offers, details = await agent_search_oson(agent_bus, product, use_ai=use_ai)
+                        elif admin:
                             offers, details = await admin.search(site, product, use_ai=use_ai)
                         else:
                             offers, details = await browser.search(site, product, use_ai=use_ai)
