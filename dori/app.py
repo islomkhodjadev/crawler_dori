@@ -247,19 +247,20 @@ def create_app(db_path=None):
     def agent_extension_zip():
         """Serve the Chrome extension as a downloadable zip."""
         import io, zipfile
-        ext_dir = Path(__file__).resolve().parent.parent / 'chrome-extension'
-        log.info('extension.zip ext_dir=%s exists=%s', ext_dir, ext_dir.exists())
+        # chrome-extension/ lives next to the project root (cwd when the service starts),
+        # or can be overridden with DORI_EXTENSION_DIR. __file__ is unreliable when the
+        # package is installed into a virtualenv (it resolves inside site-packages).
+        ext_dir = Path(os.getenv('DORI_EXTENSION_DIR') or
+                       Path.cwd() / 'chrome-extension')
+        if not ext_dir.exists():
+            raise HTTPException(404, f'Extension directory not found: {ext_dir}')
         buf = io.BytesIO()
-        count = 0
         with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
             for f in sorted(ext_dir.rglob('*')):
                 if f.is_file() and not f.name.startswith('.'):
                     zf.write(f, f.relative_to(ext_dir))
-                    count += 1
-        log.info('extension.zip files=%d size=%d', count, buf.tell())
         buf.seek(0)
-        data = buf.read()
-        return Response(data, media_type='application/zip',
+        return Response(buf.read(), media_type='application/zip',
                         headers={'Content-Disposition': 'attachment; filename="dori-agent.zip"'})
 
     @app.websocket('/api/agent/ws')
