@@ -23,9 +23,9 @@ function applyStatus({ status, error, tasksHandled, serverUrl }) {
     : '';
 }
 
-// Load saved URL into field
+// Load saved URL into field, default to production server
 chrome.storage.local.get(['serverUrl']).then(d => {
-  if (d.serverUrl) urlInput.value = d.serverUrl;
+  urlInput.value = d.serverUrl || 'https://predictor.03dorixona.uz';
 });
 
 // Ask background for current status
