@@ -1,6 +1,6 @@
 // Admin panel: a five-step workflow (products → connect → collect → review → results) in RU / UZ / EN.
 let sourceState = {}, activeRun = false, viewerSocket = null, viewerSite = null;
-let products = [], selected = new Set(), currentRun = null, currentReport = null, aiConfigured = false;
+let products = [], selected = new Set(), currentRun = null, currentReport = null, aiConfigured = false, agentConnected = false;
 let runs = [], stats = null, expanded = new Set(), openRejected = new Set(), sites = new Set(['arzon', 'oson']);
 let lastReportJson = '', lastStatsJson = '', tab = 'products', editingPrice = null;
 const SITE_NAMES = {arzon: 'ArzonApteka', oson: 'OsonApteka'};
@@ -33,6 +33,46 @@ async function api(url, options = {}) {
 }
 const post = (url, body) => api(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
 
+/* ---------- agent UI ---------- */
+let agentCheckBusy = false;
+function updateAgentUI() {
+  const badge = $('#agent-badge');
+  const checkBtn = $('#agent-check');
+  const profileRow = $('#agent-profile');
+  if (badge) badge.textContent = t(agentConnected ? 'agent.connected' : 'agent.disconnected');
+  if (checkBtn) checkBtn.hidden = !agentConnected;
+  if (profileRow) profileRow.hidden = !agentConnected;
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const checkBtn = $('#agent-check');
+  if (checkBtn) checkBtn.addEventListener('click', async () => {
+    if (agentCheckBusy) return;
+    const productId = parseInt($('#test-product')?.value);
+    if (!productId) { toast(t('connect.needProduct')); return; }
+    agentCheckBusy = true;
+    const statusEl = $('#agent-status-text');
+    if (statusEl) statusEl.textContent = t('connect.checking');
+    try {
+      const r = await post('/api/agent/check', {product_id: productId});
+      if (r.ok) {
+        const profileEl = $('#agent-profile-name');
+        if (profileEl) profileEl.textContent = t('connect.verified', {n: r.listings});
+        if (statusEl) statusEl.textContent = '';
+        toast(t('connect.verified', {n: r.listings}) + (r.method ? ' (' + r.method + ')' : ''));
+      } else {
+        if (statusEl) statusEl.textContent = r.error || 'Error';
+        toast(r.error || 'Agent check failed');
+      }
+    } catch (x) {
+      if (statusEl) statusEl.textContent = x.message;
+      toast(x.message);
+    } finally {
+      agentCheckBusy = false;
+    }
+  });
+});
+
 /* ---------- language and tabs ---------- */
 function applyLanguage() {
   document.documentElement.lang = lang;
@@ -44,6 +84,7 @@ function applyLanguage() {
     .map(v => `<option value="${v}">${esc(t('filter.' + v))}</option>`).join('');
   $('#report-filter').value = filter;
   $('#ai-availability').textContent = t(aiConfigured ? 'connect.aiOn' : 'connect.aiOff');
+  updateAgentUI();
   renderAll();
 }
 function showTab(name) {
@@ -121,13 +162,20 @@ async function loadProducts() {
 
 /* ---------- 2. connect ---------- */
 function chosenSites() { return [...sites]; }
-function connectionsReady() { const list = chosenSites(); return list.length > 0 && list.every(s => sourceState[s]?.status === 'connected'); }
+function siteReady(s) {
+  // Oson is covered by the Chrome extension agent when connected — no server browser needed.
+  if (s === 'oson' && agentConnected) return true;
+  return sourceState[s]?.status === 'connected' && !sourceState[s]?.busy;
+}
+function connectionsReady() { const list = chosenSites(); return list.length > 0 && list.every(siteReady); }
 function renderBrowsers() {
   $('#browser-cards').innerHTML = ['arzon', 'oson'].map(site => {
     const s = sourceState[site] || {status: 'closed', message: '', opened: false};
-    const note = s.status === 'connected' && s.checked_at ? t('connect.checkedAt', {t: when(s.checked_at)}) : s.message;
-    return `<article class="card site ${stateClass(s.status)}">
-      <div class="site-head"><h3>${siteName(site)}</h3><span class="pill ${stateClass(s.status)}">${esc(stateLabel(s.status))}</span></div>
+    const verifying = s.busy && ['loading','verifying','backoff'].includes(s.verification?.state);
+    const displayState = verifying ? s.verification.state : s.status;
+    const note = verifying ? s.verification.message : s.status === 'connected' && s.checked_at ? t('connect.checkedAt', {t: when(s.checked_at)}) : s.message;
+    return `<article class="card site ${stateClass(displayState)}">
+      <div class="site-head"><h3>${siteName(site)}</h3><span class="pill ${stateClass(displayState)}">${esc(stateLabel(displayState))}</span></div>
       <p class="muted">${esc(note || '')}</p>
       <div class="row-actions">
         <button data-browser-open="${site}" class="${s.status === 'connected' ? 'ghost' : ''}">${t('connect.open')}</button>
@@ -157,8 +205,10 @@ function collectBlocker() {
 function renderCollect() {
   $('#collect-selected').textContent = selected.size;
   $('#collect-sites').innerHTML = ['arzon', 'oson'].map(site => {
-    const status = sourceState[site]?.status || 'closed';
-    return `<label class="check site-pick"><input type="checkbox" data-site-toggle="${site}" ${sites.has(site) ? 'checked' : ''}> ${siteName(site)} <span class="pill ${stateClass(status)}">${esc(stateLabel(status))}</span></label>`;
+    const agentOk = site === 'oson' && agentConnected;
+    const status = agentOk ? 'connected' : (sourceState[site]?.status || 'closed');
+    const label = agentOk ? t('agent.connected') : stateLabel(status);
+    return `<label class="check site-pick"><input type="checkbox" data-site-toggle="${site}" ${sites.has(site) ? 'checked' : ''}> ${siteName(site)} <span class="pill ${stateClass(status)}">${esc(label)}</span></label>`;
   }).join('');
   const blocker = collectBlocker();
   $('#collect-blocker').textContent = blocker;
@@ -213,7 +263,9 @@ function renderRuns() {
   $('#cancel-run').hidden = !r || !['queued', 'running', 'waiting_for_human'].includes(r.status);
   const query = currentRun ? '?run_id=' + currentRun : '';
   $('#export').href = '/api/export' + query;
+  $('#export-xlsx').href = '/api/export/xlsx' + query;
   $('#export-candidates').href = '/api/export/candidates' + query;
+  $('#export-candidates-xlsx').href = '/api/export/candidates/xlsx' + query;
 }
 async function refreshRuns() {
   runs = await api('/api/runs');
@@ -495,11 +547,19 @@ $('#remote-control').onpaste = e => { e.preventDefault(); sendBrowser({type: 'te
   try {
     const h = await api('/api/health');
     aiConfigured = h.ai_configured;
+    agentConnected = Boolean(h.agent_connected);
     $('#use-ai').disabled = !aiConfigured;
     $('#use-ai').checked = Boolean(h.ai_default_enabled);
     $('#logout').hidden = !h.admin_password_set;
     applyLanguage();
     await loadProducts(); await refreshBrowsers(); await refreshRuns();
   } catch (x) { toast(x.message); }
-  setInterval(async () => { try { await refreshBrowsers(); await refreshRuns(); } catch {} }, 4000);
+  setInterval(async () => {
+    try {
+      const h = await api('/api/health');
+      agentConnected = Boolean(h.agent_connected);
+      updateAgentUI();
+    } catch {}
+    try { await refreshBrowsers(); await refreshRuns(); } catch {};
+  }, 4000);
 })();

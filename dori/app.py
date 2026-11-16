@@ -19,6 +19,7 @@ from .service import crawl
 from .storage import Store
 from .browser_admin import BrowserAdmin, SITES
 from .auth import AdminAuth
+from .agent import AgentBus
 from .logs import get, setup as setup_logging
 
 log = get('http')
@@ -71,6 +72,7 @@ def create_app(db_path=None):
     run_tasks = {}
     browsers = BrowserAdmin()
     auth = AdminAuth()
+    agent_bus = AgentBus()
 
     @asynccontextmanager
     async def lifespan(app):
@@ -123,7 +125,9 @@ def create_app(db_path=None):
         import os
         return {'ok': True, 'ai_configured': bool(os.getenv('OPENAI_API_KEY')),
                 'ai_default_enabled': bool(os.getenv('OPENAI_API_KEY')),
-                'admin_password_set': bool(auth.password)}
+                'admin_password_set': bool(auth.password),
+                'agent_connected': agent_bus.connected() > 0,
+                'agent_count': agent_bus.connected()}
 
     @app.post('/api/import')
     async def upload(file: UploadFile = File(...)):
@@ -161,8 +165,11 @@ def create_app(db_path=None):
         use_ai = body.use_ai if body.use_ai is not None else bool(os.getenv('OPENAI_API_KEY'))
         if use_ai and not os.getenv('OPENAI_API_KEY'):
             raise HTTPException(400, 'Configure OPENAI_API_KEY before enabling AI parsing')
+        # Sites covered by the Chrome extension agent don't need a server-side browser session.
+        agent_sites = {'oson'} if agent_bus.connected() else set()
+        sites_needing_browser = [s for s in body.sites if s not in agent_sites]
         try:
-            browsers.require_ready(body.sites)
+            browsers.require_ready(sites_needing_browser)
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
         products = store.products(list(set(body.product_ids)))
@@ -173,7 +180,7 @@ def create_app(db_path=None):
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
         task = asyncio.create_task(crawl(store, run_id, products, tuple(dict.fromkeys(body.sites)),
-                                         admin=browsers, use_ai=use_ai))
+                                         admin=browsers, use_ai=use_ai, agent_bus=agent_bus))
         run_tasks[run_id] = task
         tasks.add(task)
         task.add_done_callback(tasks.discard)
@@ -191,7 +198,10 @@ def create_app(db_path=None):
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         except Exception as exc:
-            raise HTTPException(503, 'Chromium could not start: ' + type(exc).__name__ + '. Run python -m playwright install chromium.') from exc
+            hint = ('Install Google Chrome on the machine running this app, or set DORI_BROWSER_CHANNEL=chromium.'
+                    if os.getenv('DORI_BROWSER_CHANNEL','chromium').lower()=='chrome'
+                    else 'Run python -m playwright install chromium.')
+            raise HTTPException(503, 'Browser could not start: '+type(exc).__name__+'. '+hint+' Visible mode also requires a desktop display.') from exc
         return browsers.state()[site]
 
     @app.post('/api/browsers/{site}/check')
@@ -229,6 +239,90 @@ def create_app(db_path=None):
         from .adapters import now
         store.update_run(run_id, status='interrupted', finished_at=now(), active_product_id=None, active_site=None, phase='Cancelled', error='Collection cancelled by admin')
         return {'ok': True}
+
+    # ------------------------------------------------------------------ agent --
+    @app.get('/api/agent/status')
+    def agent_status():
+        """How many Chrome extensions are currently connected."""
+        return {'connected': agent_bus.connected()}
+
+    @app.post('/api/agent/check')
+    async def agent_check(body: ConnectionRequest):
+        """Send a real Oson search through the connected agent and verify it returns prices."""
+        if not agent_bus.connected():
+            raise HTTPException(503, 'No Chrome extension connected. Install the extension and connect it first.')
+        products = store.products([body.product_id])
+        if not products:
+            raise HTTPException(404, 'Select an imported product for the connection test')
+        from .adapters import BrowserCrawler
+        from .matching import search_term
+        from urllib.parse import urlencode
+        product = products[0]
+        agent_url = 'https://osonapteka.uz/search?' + urlencode({'q': search_term(product)})
+        result = await agent_bus.fetch(agent_url, 'oson')
+        if not result or not result.get('html'):
+            raise HTTPException(502, 'Extension timed out or returned no page. Check that your Chrome is open and the extension is connected.')
+        from bs4 import BeautifulSoup
+        from .adapters import parse_oson_jsonld
+        from .oson_cards import parse_oson_cards
+        from .page_state import classify_text
+        html = result['html']
+        final_url = result.get('url', agent_url)
+        offers = parse_oson_jsonld(html, final_url)
+        method = 'json_ld'
+        if not offers:
+            offers = parse_oson_cards(html, final_url)
+            method = 'visible_cards'
+        body_text = BeautifulSoup(html, 'html.parser').get_text(' ', strip=True)
+        state = classify_text(body_text)
+        if offers:
+            return {'ok': True, 'listings': len(offers), 'method': method,
+                    'preview': [{'name': o.get('name',''), 'price': o.get('price'), 'currency': 'UZS'} for o in offers[:3]]}
+        if state == 'no_results':
+            return {'ok': True, 'listings': 0, 'method': 'no_results', 'preview': []}
+        return {'ok': False, 'state': state, 'error': f'Page loaded (state: {state}) but no priced offers parsed. Try a different test product.'}
+
+    @app.get('/api/agent/extension.zip')
+    def agent_extension_zip():
+        """Serve the Chrome extension as a downloadable zip."""
+        import io, zipfile
+        # chrome-extension/ lives next to the project root (cwd when the service starts),
+        # or can be overridden with DORI_EXTENSION_DIR. __file__ is unreliable when the
+        # package is installed into a virtualenv (it resolves inside site-packages).
+        ext_dir = Path(os.getenv('DORI_EXTENSION_DIR') or
+                       Path.cwd() / 'chrome-extension')
+        if not ext_dir.exists():
+            raise HTTPException(404, f'Extension directory not found: {ext_dir}')
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for f in sorted(ext_dir.rglob('*')):
+                if f.is_file() and not f.name.startswith('.'):
+                    zf.write(f, f.relative_to(ext_dir))
+        buf.seek(0)
+        return Response(buf.read(), media_type='application/zip',
+                        headers={'Content-Disposition': 'attachment; filename="dori-agent.zip"'})
+
+    @app.websocket('/api/agent/ws')
+    async def agent_ws(websocket: WebSocket, password: str = ''):
+        """Chrome extension connects here. Auth via ?password= query param."""
+        from urllib.parse import urlparse
+        origin = websocket.headers.get('origin', '')
+        host = websocket.headers.get('host', '')
+        # Allow connection from the extension (chrome-extension:// origin) or same host.
+        origin_ok = (not origin
+                     or urlparse(origin).scheme == 'chrome-extension'
+                     or urlparse(origin).netloc == host)
+        if not origin_ok:
+            await websocket.close(code=1008, reason='Cross-origin')
+            return
+        if auth.password and not __import__('secrets').compare_digest(password.encode(), auth.password.encode()):
+            await websocket.close(code=1008, reason='Unauthorized')
+            log.warning('agent ws rejected wrong password origin=%s', origin)
+            return
+        await websocket.accept()
+        await agent_bus.attach(websocket)
+
+    # ------------------------------------------------------------------ /agent --
 
     @app.get('/api/statistics')
     def statistics(run_id: int | None = None):
@@ -341,5 +435,78 @@ def create_app(db_path=None):
                 writer.writerow(["'"+v if isinstance(v,str) and v.lstrip().startswith(('=','+','-','@')) else v for v in row])
         return Response('\ufeff'+out.getvalue(),media_type='text/csv; charset=utf-8',
                         headers={'Content-Disposition':'attachment; filename="dori-candidates.csv"'})
+
+    @app.get('/api/export/xlsx')
+    def export_xlsx(run_id: int | None = None):
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment
+        from openpyxl.utils import get_column_letter
+        report = store.report(run_id)
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = '\u0426\u0435\u043d\u044b'
+        header_font = Font(bold=True, color='FFFFFF')
+        header_fill = PatternFill('solid', fgColor='1D6B55')
+        headers = ['\u0422\u043e\u0432\u0430\u0440','\u041f\u0440\u043e\u0438\u0437\u0432\u043e\u0434\u0438\u0442\u0435\u043b\u044c','\u041d\u0430\u0448\u0430 \u0446\u0435\u043d\u0430','Arzon','Oson','\u0420\u044b\u043d\u043e\u0447\u043d\u0430\u044f \u0446\u0435\u043d\u0430','\u041e\u043f\u0442\u0438\u043c\u0430\u043b\u044c\u043d\u0430\u044f \u0446\u0435\u043d\u0430','\u041a \u043d\u0430\u0448\u0435\u0439 \u0446\u0435\u043d\u0435 %','\u0421\u0442\u0430\u0442\u0443\u0441']
+        for col, h in enumerate(headers, 1):
+            cell = ws.cell(1, col, h)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal='center')
+        ws.row_dimensions[1].height = 20
+        for entry in report['products']:
+            p, e = entry['product'], entry['estimate']
+            delta = e.get('invoice_delta_percent')
+            opt = entry['advice']['price'] if entry.get('advice') else None
+            row = [
+                p['name'], p.get('manufacturer',''),
+                p.get('invoice_price'), e['per_site'].get('arzon'), e['per_site'].get('oson'),
+                e.get('value'), opt,
+                f"{delta:+.1f}%" if delta is not None else '',
+                e.get('status',''),
+            ]
+            ws.append(["'" + v if isinstance(v, str) and v.lstrip().startswith(('=','+','-','@')) else v for v in row])
+        # Column widths
+        for col, width in zip(range(1, 10), [45, 25, 14, 14, 14, 14, 16, 12, 14]):
+            ws.column_dimensions[get_column_letter(col)].width = width
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return Response(buf.read(), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                        headers={'Content-Disposition': 'attachment; filename="dori-prices.xlsx"'})
+
+    @app.get('/api/export/candidates/xlsx')
+    def export_candidates_xlsx(run_id: int | None = None):
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment
+        from openpyxl.utils import get_column_letter
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = '\u0412\u0441\u0435 \u043f\u0440\u0435\u0434\u043b\u043e\u0436\u0435\u043d\u0438\u044f'
+        header_font = Font(bold=True, color='FFFFFF')
+        header_fill = PatternFill('solid', fgColor='1D6B55')
+        headers = ['ID \u0442\u043e\u0432\u0430\u0440\u0430','\u0422\u043e\u0432\u0430\u0440','\u0421\u0430\u0439\u0442','\u041d\u0430\u0437\u0432\u0430\u043d\u0438\u0435 \u043d\u0430 \u0441\u0430\u0439\u0442\u0435','\u041f\u0440\u043e\u0438\u0437\u0432\u043e\u0434\u0438\u0442\u0435\u043b\u044c','\u0426\u0435\u043d\u0430 (\u0441\u0443\u043c)',
+                   '\u0421\u0442\u0430\u0442\u0443\u0441 \u0441\u043e\u0432\u043f\u0430\u0434\u0435\u043d\u0438\u044f','\u041e\u0446\u0435\u043d\u043a\u0430','\u041f\u0440\u0438\u0447\u0438\u043d\u044b','\u0414\u0430\u0442\u0430','\u0421\u0441\u044b\u043b\u043a\u0430']
+        for col, h in enumerate(headers, 1):
+            cell = ws.cell(1, col, h)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal='center')
+        ws.row_dimensions[1].height = 20
+        for entry in store.report(run_id)['products']:
+            for offer in entry['offers']:
+                row = [entry['product']['id'], entry['product']['name'], offer['site'],
+                       offer['name'], offer.get('manufacturer',''),
+                       offer.get('manual_price') or offer.get('observed_price', offer['price']),
+                       offer['match_status'], round(offer['score'], 2),
+                       ' | '.join(offer['reasons']), offer.get('observed_at','')[:10], offer['url']]
+                ws.append(["'" + v if isinstance(v, str) and v.lstrip().startswith(('=','+','-','@')) else v for v in row])
+        for col, width in zip(range(1, 12), [8, 40, 10, 45, 25, 14, 16, 8, 50, 12, 50]):
+            ws.column_dimensions[get_column_letter(col)].width = width
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return Response(buf.read(), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                        headers={'Content-Disposition': 'attachment; filename="dori-candidates.xlsx"'})
 
     return app

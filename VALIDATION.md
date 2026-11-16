@@ -80,3 +80,27 @@
 - Chromium UI checks cover desktop/mobile statistics, progress percentage, current
   product/site, match-status filtering and immediate count updates after review.
   These checks use synthetic records, not the user's invoice or business prices.
+
+## Experimental SafeLine browser-verification branch
+
+- Branch `experiment/safeline-browser-verification`, based on master `7700547`.
+- 93 unit/API tests pass; JavaScript syntax checks pass for app and translations.
+- Real Chromium fixtures pass automatic HTTP 468 → browser script → cookie →
+  reload, shared-context robots/product requests, Disallow enforcement, hard denial,
+  explicit human challenge, verification timeout and listener cleanup.
+- Live read-only browser checks from this cloud instance still produce
+  `access_blocked` on the Oson homepage and `crawl_permission` on its robots policy.
+  This branch does not establish successful live Oson verification.
+- No SHA1 verification endpoint or token payload was guessed. Direct PoW and
+  fingerprint-spoofing adapters are not included. See docs/SAFELINE_EXPERIMENT.md.
+
+## Installed Google Chrome option (experiment branch only)
+
+- 97 unit/API tests pass. Added channel selection, visible mode, proxy propagation,
+  invalid-configuration handling and the actual options passed to persistent launch.
+- Google Chrome is not installed on this cloud executor. Launch configuration was
+  tested with a mock Playwright runtime; real Google Chrome/Oson validation must
+  be performed on the target Mac/server. Existing Chromium fixtures still pass.
+- Chrome uses a dedicated profile; personal profiles and account cookies are not
+  copied. The experiment remains Playwright-controlled and does not guarantee
+  removal of SafeLine debugging detection.

@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 from dori import ai
 from dori.app import create_app
-from tests.test_manual_price import seed
+from test_manual_price import seed
 
 
 def test_optimal_price_is_kept_between_ours_and_theirs_and_saved(tmp_path, monkeypatch):

@@ -7,9 +7,10 @@ from datetime import datetime, timezone
 from urllib.parse import urlencode, urljoin, urlparse
 from urllib.robotparser import RobotFileParser
 
-import httpx
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
+from .challenge import settle, retry_after_seconds
+from .browser_config import launch_options
 from .logs import get
 from .page_state import classify_text, has_visible_price
 
@@ -36,6 +37,10 @@ class RateLimited(SourceError):
     code = 'rate_limited'
 
 
+class AutomaticVerificationTimeout(SourceError):
+    code = 'verification_timeout'
+
+
 class NoResults(SourceError):
     code = 'no_results'
 
@@ -47,6 +52,62 @@ class VerificationRequired(SourceError):
 
 def now():
     return datetime.now(timezone.utc).isoformat()
+
+
+async def _fetch_oson_page(agent_bus, query):
+    """Fetch one Oson search page via agent and return (offers, html, final_url) or None on failure."""
+    from .oson_cards import parse_oson_cards
+    agent_url = 'https://osonapteka.uz/search?' + urlencode({'q': query})
+    result = await agent_bus.fetch(agent_url, 'oson')
+    if not result or not result.get('html'):
+        return None
+    html = result['html']
+    final_url = result.get('url', agent_url)
+    offers = parse_oson_jsonld(html, final_url)
+    if not offers:
+        offers = parse_oson_cards(html, final_url)
+    return offers, html, final_url
+
+
+async def agent_search_oson(agent_bus, product, use_ai=None):
+    """Fetch Oson search results through the connected Chrome extension agent.
+    If the primary search returns no parseable offers, try AI-generated name variants."""
+    from .matching import search_term
+    primary_query = search_term(product, site='oson')
+    log.info('agent shortcut site=oson product_id=%s query=%r', product.get('id'), primary_query)
+
+    fetched = await _fetch_oson_page(agent_bus, primary_query)
+    if fetched is None:
+        log.warning('agent shortcut failed or timed out for oson product_id=%s', product.get('id'))
+        return [], {'status': 'error', 'error': 'agent fetch timed out or returned no HTML', 'observed_at': now()}
+
+    offers, html, final_url = fetched
+    if offers:
+        return offers, {'status': 'ok', 'url': final_url, 'pages': 1,
+                        'extraction_method': 'agent_json_ld' if parse_oson_jsonld(html, final_url) else 'agent_visible_cards',
+                        'scope': 'Oson prices via Chrome extension agent (user browser)'}
+
+    # Primary query returned a page but no offers — try AI-generated variants.
+    if use_ai or os.getenv('OPENAI_API_KEY'):
+        from .ai import search_term_variants
+        variants = await search_term_variants(product, site='oson')
+        for variant in variants:
+            if variant.lower() == primary_query.lower():
+                continue
+            log.info('agent shortcut oson fallback product_id=%s variant=%r', product.get('id'), variant)
+            fetched2 = await _fetch_oson_page(agent_bus, variant)
+            if fetched2 and fetched2[0]:
+                v_offers, v_html, v_url = fetched2
+                return v_offers, {'status': 'ok', 'url': v_url, 'pages': 1,
+                                  'extraction_method': 'agent_json_ld',
+                                  'scope': f'Oson via agent (AI variant: {variant})'}
+
+    body_text = BeautifulSoup(html, 'html.parser').get_text(' ', strip=True)
+    state = classify_text(body_text)
+    if state == 'no_results':
+        return [], {'status': 'no_results', 'url': final_url, 'pages': 1}
+    log.warning('agent shortcut returned page but no offers parsed site=oson state=%s', state)
+    return [], {'status': 'no_results', 'url': final_url, 'pages': 1}
 
 
 def price_value(text):
@@ -136,22 +197,24 @@ def parse_oson_jsonld(html, page_url):
 
 
 class BrowserCrawler:
-    def __init__(self, profile=None, interactive=False):
+    def __init__(self, profile=None, interactive=False, agent_bus=None):
         self.profile = profile
         self.interactive = interactive
+        self.agent_bus = agent_bus  # AgentBus instance for IP-blocked sites
         self.delay = max(2, float(os.getenv('CRAWL_DELAY_SECONDS', '3')))
         self.max_pages = max(1, min(10, int(os.getenv('CRAWL_MAX_PAGES', '3'))))
         self.robots = {}
         self.last_request = {}
         self.assessments = {}
+        self.robots_checked = {}
+        self.verification = {'state':'idle','message':''}
+        self.verification_timeout=max(1,min(120,float(os.getenv('DORI_VERIFICATION_TIMEOUT','30'))))
+        self.max_backoff=max(0,min(300,float(os.getenv('DORI_MAX_BACKOFF','30'))))
 
     async def __aenter__(self):
+        options = launch_options(interactive=self.interactive)
         self.playwright = await async_playwright().start()
-        options = {'headless': True}
-        if os.getenv('DORI_BROWSER_PROXY'):
-            options['proxy'] = {'server': os.environ['DORI_BROWSER_PROXY']}
         try:
-            options['headless'] = os.getenv('DORI_HEADLESS', 'true').lower() != 'false'
             profile = self.profile or os.getenv('DORI_BROWSER_PROFILE')
             if profile:
                 self.context = await self.playwright.chromium.launch_persistent_context(profile, locale='ru-RU', **options)
@@ -174,57 +237,99 @@ class BrowserCrawler:
             await self.browser.close()
         await self.playwright.stop()
 
+    def verification_progress(self, state, message):
+        if self.verification.get('state')!=state:
+            log.info('browser verification state=%s message=%s',state,message)
+        self.verification={'state':state,'message':message}
+
+    async def browser_load(self, page, url):
+        """Same browser/UA/profile for pages and robots; bounded server backoff."""
+        self.verification_progress('loading','Loading website in the existing browser session.')
+        try:
+            for attempt in range(2):
+                response=await page.goto(url,wait_until='domcontentloaded',timeout=60000)
+                status=response.status if response else 200
+                if status==429 or status in (502,503,504):
+                    wait=retry_after_seconds(response.headers.get('retry-after'))
+                    wait=max(self.delay*(2**attempt),wait or 0)
+                    if attempt==0 and wait<=self.max_backoff:
+                        self.verification_progress('backoff',f'HTTP {status}: waiting {wait:g} seconds before one retry.')
+                        await asyncio.sleep(wait)
+                        continue
+                    if status==429:
+                        raise RateLimited(f'Website rate limited this session. Retry after at least {wait:g} seconds; no early retry was made.')
+                    raise SourceError(f'Website returned HTTP {status} after bounded retries')
+                outcome=await settle(page,response,self.verification_timeout,self.verification_progress)
+                if outcome.state=='human_verification':
+                    raise VerificationRequired('Website requires human verification. Complete it in the browser, then check connection.')
+                if outcome.state in ('access_blocked','unexpected_redirect'):
+                    raise AccessBlocked('Website denies access or redirected away from its host; browser verification did not grant access.')
+                if outcome.state=='verification_timeout':
+                    raise AutomaticVerificationTimeout('Automatic browser verification timed out. Inspect the browser and retry; no successful verification was assumed.')
+                if outcome.status==468 and outcome.automatic and attempt==0:
+                    # Confirm the granted session with one normal request; never
+                    # assume that a changed challenge DOM means server access.
+                    continue
+                if outcome.status>=400 and not (outcome.status==404 and urlparse(url).path=='/robots.txt') and not (outcome.status==468 and outcome.state in ('prices_visible','no_results')):
+                    raise SourceError(f'HTTP {outcome.status}: no verified product page was obtained')
+                self.verification_progress('ready','Browser page loaded'+(' after automatic verification.' if outcome.automatic else '.'))
+                return response,outcome
+        except SourceError as exc:
+            self.verification_progress(exc.code,str(exc))
+            raise
+        except Exception as exc:
+            self.verification_progress('source_error','Browser request failed: '+type(exc).__name__)
+            raise
+
     async def allowed(self, url):
-        root = f'{urlparse(url).scheme}://{urlparse(url).netloc}'
-        if root not in self.robots:
-            cookies = httpx.Cookies()
-            for cookie in await self.context.cookies(root):
-                cookies.set(cookie['name'], cookie['value'], domain=cookie['domain'], path=cookie['path'])
-            async with httpx.AsyncClient(timeout=30, follow_redirects=True, cookies=cookies) as client:
-                try:
-                    response = await client.get(root + '/robots.txt', headers={'User-Agent': 'DoriPriceBot/0.1'})
-                    if response.status_code == 404:
-                        content = ''
-                    elif response.status_code != 200 or '<html' in response.text.lower() or '<!doctype' in response.text.lower():
-                        raise CrawlPermissionError('robots.txt inaccessible or challenged; cannot verify crawl permission')
-                    else:
-                        content = response.text
-                except httpx.HTTPError as exc:
-                    raise SourceError('robots.txt request failed: ' + type(exc).__name__) from exc
-            parser = RobotFileParser()
-            parser.parse(content.splitlines())
-            self.robots[root] = parser
-        parser = self.robots[root]
-        if not parser.can_fetch('DoriPriceBot', url):
-            log.warning('robots.txt disallows url=%s', url)
+        root=f'{urlparse(url).scheme}://{urlparse(url).netloc}'
+        loop=asyncio.get_running_loop()
+        if root not in self.robots or loop.time()-self.robots_checked.get(root,0)>300:
+            robots_page=await self.context.new_page()
+            try:
+                response,outcome=await self.browser_load(robots_page,root+'/robots.txt')
+                status=outcome.status
+                if status==404:
+                    content=''
+                elif status==200:
+                    content=await robots_page.locator('body').inner_text()
+                    # Navigation after a challenge can replace the response. Use the
+                    # current page's plain-text rendering, but reject HTML challenge pages.
+                    if '<html' in content.casefold():
+                        raise CrawlPermissionError('robots.txt did not provide a readable policy')
+                    current_html=await robots_page.content()
+                    if not ('<pre' in current_html.casefold() or 'text/plain' in (response.headers.get('content-type','') if response else '')):
+                        raise CrawlPermissionError('robots.txt returned HTML instead of a plain-text policy')
+                else:
+                    raise CrawlPermissionError(f'robots.txt returned HTTP {status}')
+                parser=RobotFileParser()
+                parser.parse(content.splitlines())
+                self.robots[root]=parser
+                self.robots_checked[root]=loop.time()
+            except (VerificationRequired,RateLimited,AutomaticVerificationTimeout):
+                raise
+            except SourceError as exc:
+                raise CrawlPermissionError('Cannot verify crawl permission: '+str(exc)) from exc
+            finally:
+                await robots_page.close()
+        parser=self.robots[root]
+        if not parser.can_fetch('DoriPriceBot',url):
             raise CrawlPermissionError('robots.txt disallows this search path')
-        return max(self.delay, parser.crawl_delay('DoriPriceBot') or parser.crawl_delay('*') or 0)
+        return max(self.delay,parser.crawl_delay('DoriPriceBot') or parser.crawl_delay('*') or 0)
 
     async def navigate(self, page, url):
-        delay = await self.allowed(url)
-        host = urlparse(url).hostname
-        loop = asyncio.get_running_loop()
-        await asyncio.sleep(max(0, self.last_request.get(host, 0) + delay - loop.time()))
-        self.last_request[host] = loop.time()
-        response = None
-        for attempt in range(2):
-            response = await page.goto(url, wait_until='domcontentloaded', timeout=60000)
-            if not response or response.status not in (502, 503, 504) or attempt == 1:
-                break
-            await asyncio.sleep(delay * 2)
-            self.last_request[host] = loop.time()
-        log.info('navigate url=%s status=%s', url, response.status if response else None)
-        if response and response.status == 429:
-            raise RateLimited('Website rate limit reached; wait before retrying')
-        body = await page.locator('body').inner_text()
-        state = classify_text(body)
-        log.info('page state url=%s state=%s text_chars=%d', page.url, state, len(body))
-        if state == 'human_verification':
-            raise VerificationRequired('Website requests human verification')
-        if state == 'access_blocked' or (response and response.status in (401, 403)):
-            raise AccessBlocked('Website denies access; no clickable verification was established')
-        if response and response.status >= 400:
-            raise SourceError(f'HTTP {response.status}')
+        try:
+            delay=await self.allowed(url)
+        except (VerificationRequired,AutomaticVerificationTimeout):
+            # Surface the policy challenge in the admin-controlled page before
+            # closing the temporary policy tab; the same cookies are shared.
+            await page.goto(f'{urlparse(url).scheme}://{urlparse(url).netloc}/robots.txt',wait_until='domcontentloaded',timeout=60000)
+            raise
+        host=urlparse(url).hostname
+        loop=asyncio.get_running_loop()
+        await asyncio.sleep(max(0,self.last_request.get(host,0)+delay-loop.time()))
+        self.last_request[host]=loop.time()
+        await self.browser_load(page,url)
 
     async def assess_page(self, page, site):
         from .ai import analyze_visible_page, AIExtractionError
@@ -286,6 +391,16 @@ class BrowserCrawler:
         from .matching import search_term
         if use_ai is None:
             use_ai = os.getenv('OPENAI_PARSE_HTML', 'false').lower() == 'true'
+
+        # Agent shortcut: when a Chrome extension is connected and site is Oson
+        # (which is IP-blocked on the server), skip the server-side browser entirely
+        # and fetch directly through the user's real Chrome.
+        if site == 'oson' and self.agent_bus and self.agent_bus.connected() and page is None:
+            offers, details = await agent_search_oson(self.agent_bus, product, use_ai=use_ai)
+            if details.get('status') in ('ok', 'no_results'):
+                return offers, details
+            # Fall through to server-side browser as last resort
+
         own_page = page is None
         page = page or await self.context.new_page()
         self.assessments.pop(id(page),None)

@@ -1,5 +1,7 @@
 # Dori — pharmacy price comparison
 
+**Experimental branch:** see [SafeLine browser-verification experiment](docs/SAFELINE_EXPERIMENT.md) for this branch’s behavior, deployment commands and limits.
+
 Python + Chromium + FastAPI + SQLite. Import an invoice, find matching medicine
 packages, compare observed prices and estimate **current market price** in UZS.
 An admin panel with Excel upload, embedded interactive Chromium browsers, connection checks, human-verification pause/resume, CLI, CSV export and optional OpenAI parsing is included.

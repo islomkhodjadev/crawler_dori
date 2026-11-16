@@ -43,6 +43,42 @@ async def suggest_attributes(product):
     return Suggestion.model_validate_json(content).model_dump()
 
 
+async def search_term_variants(product, site='oson') -> list[str]:
+    """Ask OpenAI for alternative search terms this product might be listed under on the given site."""
+    key = os.getenv('OPENAI_API_KEY')
+    if not key:
+        return []
+    model = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
+    prompt = (
+        f'A pharmacy product is named "{product["name"]}" by manufacturer "{product.get("manufacturer","")}". '
+        f'List up to 3 alternative search queries a user might type on a pharmacy website to find this product. '
+        f'Focus on the drug/vitamin name and potency, not the brand. '
+        f'Return only a JSON array of short strings (each under 40 chars), no explanations.'
+    )
+    log.info('search_term_variants request model=%s product=%r', model, product['name'])
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.post('https://api.openai.com/v1/chat/completions',
+                headers={'Authorization': 'Bearer ' + key},
+                json={'model': model,
+                      'messages': [{'role': 'user', 'content': prompt}],
+                      'response_format': {'type': 'json_object'},
+                      'max_tokens': 150})
+        if response.status_code != 200:
+            log.warning('search_term_variants HTTP %s', response.status_code)
+            return []
+        import json as _json
+        raw = response.json()['choices'][0]['message']['content']
+        parsed = _json.loads(raw)
+        variants = parsed if isinstance(parsed, list) else next((v for v in parsed.values() if isinstance(v, list)), [])
+        result = [str(v).strip() for v in variants if isinstance(v, str) and v.strip()]
+        log.info('search_term_variants product=%r variants=%s', product['name'], result)
+        return result[:3]
+    except Exception as exc:
+        log.warning('search_term_variants failed: %s', exc)
+        return []
+
+
 class ParsedOffer(BaseModel):
     model_config = ConfigDict(extra='forbid')
     name: str
