@@ -195,13 +195,20 @@ async function loadProducts(keepPage = false) {
 /* ---------- 2. connect ---------- */
 function chosenSites() { return [...sites]; }
 function siteReady(s) {
-  // Oson is covered by the Chrome extension agent when connected — no server browser needed.
-  if (s === 'oson' && agentConnected) return true;
+  // Both sites are covered by the Chrome extension agent when connected — no server browser needed.
+  if (agentConnected) return true;
   return sourceState[s]?.status === 'connected' && !sourceState[s]?.busy;
 }
 function connectionsReady() { const list = chosenSites(); return list.length > 0 && list.every(siteReady); }
 function renderBrowsers() {
   $('#browser-cards').innerHTML = ['arzon', 'oson'].map(site => {
+    // When agent is connected, both sites work via extension — no server browser needed.
+    if (agentConnected) {
+      return `<article class="card site connected">
+        <div class="site-head"><h3>${siteName(site)}</h3><span class="pill connected">${esc(t('agent.connected'))}</span></div>
+        <p class="muted">${esc(t('agent.usedFor', {site: siteName(site)}))}</p>
+        <div class="row-actions"></div></article>`;
+    }
     const s = sourceState[site] || {status: 'closed', message: '', opened: false};
     const verifying = s.busy && ['loading','verifying','backoff'].includes(s.verification?.state);
     const displayState = verifying ? s.verification.state : s.status;
@@ -237,7 +244,7 @@ function collectBlocker() {
 function renderCollect() {
   $('#collect-selected').textContent = selected.size;
   $('#collect-sites').innerHTML = ['arzon', 'oson'].map(site => {
-    const agentOk = site === 'oson' && agentConnected;
+    const agentOk = agentConnected;
     const status = agentOk ? 'connected' : (sourceState[site]?.status || 'closed');
     const label = agentOk ? t('agent.connected') : stateLabel(status);
     return `<label class="check site-pick"><input type="checkbox" data-site-toggle="${site}" ${sites.has(site) ? 'checked' : ''}> ${siteName(site)} <span class="pill ${stateClass(status)}">${esc(label)}</span></label>`;

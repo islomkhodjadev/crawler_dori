@@ -185,7 +185,8 @@ def create_app(db_path=None):
         if use_ai and not os.getenv('OPENAI_API_KEY'):
             raise HTTPException(400, 'Configure OPENAI_API_KEY before enabling AI parsing')
         # Sites covered by the Chrome extension agent don't need a server-side browser session.
-        agent_sites = {'oson'} if agent_bus.connected() else set()
+        # arzon is handled by the extension (per-pharmacy checkout flow) when connected.
+        agent_sites = {'oson', 'arzon'} if agent_bus.connected() else set()
         sites_needing_browser = [s for s in body.sites if s not in agent_sites]
         try:
             browsers.require_ready(sites_needing_browser)
