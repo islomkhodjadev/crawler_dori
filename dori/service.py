@@ -18,6 +18,11 @@ async def crawl(store, run_id, products, sites=('arzon', 'oson'), admin=None, us
                         if admin and site == 'oson' and agent_bus and agent_bus.connected():
                             from .adapters import agent_search_oson
                             offers, details = await agent_search_oson(agent_bus, product, use_ai=use_ai)
+                        elif admin and site == 'arzon' and agent_bus and agent_bus.connected():
+                            import os
+                            from .adapters import agent_search_arzon
+                            region_id = int(os.getenv('ARZON_REGION_ID', '2114'))
+                            offers, details = await agent_search_arzon(agent_bus, product, region_id=region_id)
                         elif admin:
                             offers, details = await admin.search(site, product, use_ai=use_ai)
                         else:
