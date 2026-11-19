@@ -4,6 +4,7 @@ let products = [], selected = new Set(), currentRun = null, currentReport = null
 let runs = [], stats = null, expanded = new Set(), openRejected = new Set(), sites = new Set(['arzon', 'oson']);
 let locationFilter = 'all';
 let pharmacyStock = {}; // dori_product_id -> [{store_name, store_address, lat, lng, qty}]
+let productsPage = 0, productsTotal = 0, productsPages = 1, productsSearch = '', PAGE_SIZE = 50;
 let lastReportJson = '', lastStatsJson = '', tab = 'products', editingPrice = null;
 const SITE_NAMES = {arzon: 'ArzonApteka', oson: 'OsonApteka'};
 const $ = s => document.querySelector(s);
@@ -98,7 +99,7 @@ function showTab(name) {
 }
 function renderAll() {
   renderProducts(); renderBrowsers(); renderRuns(); renderCollect(); renderStats();
-  if (currentReport) renderReport(currentReport);
+  if (currentReport) renderResults(currentReport.products);
   renderNext();
 }
 
@@ -139,26 +140,49 @@ function renderNext() {
 
 /* ---------- 1. products ---------- */
 function renderProducts() {
-  const q = $('#search').value.toLowerCase();
-  const shown = products.filter(p => (p.name + ' ' + p.manufacturer).toLowerCase().includes(q));
-  $('#products').innerHTML = shown.map(p => `<tr class="${selected.has(p.id) ? 'picked' : ''}">
+  $('#products').innerHTML = products.map(p => `<tr class="${selected.has(p.id) ? 'picked' : ''}">
     <td><input type="checkbox" data-select="${p.id}" aria-label="${esc(p.name)}" ${selected.has(p.id) ? 'checked' : ''}></td>
     <td><strong>${esc(p.name)}</strong><small>${esc(p.manufacturer || t('products.noManufacturer'))}${p.barcode ? ' · ' + esc(p.barcode) : ''}</small></td>
     <td class="num">${money(p.invoice_price)}</td>
     <td class="num">${aiConfigured ? `<button class="ghost small" data-ai="${p.id}">AI</button>` : ''}</td></tr>`).join('');
-  $('#products-empty').hidden = products.length > 0;
-  $('#selected-label').textContent = t('products.selected', {n: selected.size});
-  $('#all-products').checked = products.length > 0 && selected.size === products.length;
+  $('#products-empty').hidden = productsTotal > 0;
+  $('#selected-label').textContent = selected.size ? t('products.selected', {n: selected.size}) : '';
+  $('#all-products').checked = products.length > 0 && products.every(p => selected.has(p.id));
+  $('#btn-delete-selected').hidden = selected.size === 0;
+  renderPagination();
   renderCollect();
 }
-async function loadProducts() {
-  products = await api('/api/products');
-  const ids = new Set(products.map(p => p.id));
-  selected = new Set([...selected].filter(id => ids.has(id)));
+function renderPagination() {
+  let pg = $('#products-pagination');
+  if (!pg) {
+    pg = document.createElement('div');
+    pg.id = 'products-pagination';
+    pg.className = 'pagination';
+    $('#products-empty').after(pg);
+  }
+  if (productsPages <= 1) { pg.innerHTML = ''; return; }
+  const from = productsPage * PAGE_SIZE + 1;
+  const to = Math.min((productsPage + 1) * PAGE_SIZE, productsTotal);
+  pg.innerHTML = `
+    <button class="ghost small" id="pg-prev" ${productsPage === 0 ? 'disabled' : ''}>&laquo; ${t('products.prev')}</button>
+    <span class="muted">${from}–${to} ${t('products.of')} ${productsTotal}</span>
+    <button class="ghost small" id="pg-next" ${productsPage >= productsPages - 1 ? 'disabled' : ''}>${t('products.next')} &raquo;</button>`;
+  $('#pg-prev').onclick = () => { productsPage--; loadProducts(); };
+  $('#pg-next').onclick = () => { productsPage++; loadProducts(); };
+}
+async function loadProducts(keepPage = false) {
+  if (!keepPage) productsPage = 0;
+  const data = await api(`/api/products?search=${encodeURIComponent(productsSearch)}&page=${productsPage}&page_size=${PAGE_SIZE}`);
+  products = data.items;
+  productsTotal = data.total;
+  productsPages = data.pages;
   renderProducts();
+  // Populate test-product select with first page only (avoid 2800 options)
   const previous = $('#test-product').value;
-  $('#test-product').innerHTML = products.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('') || `<option value="">—</option>`;
-  if (products.some(p => String(p.id) === previous)) $('#test-product').value = previous;
+  if (productsPage === 0) {
+    $('#test-product').innerHTML = products.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('') || `<option value="">—</option>`;
+    if (products.some(p => String(p.id) === previous)) $('#test-product').value = previous;
+  }
   renderNext();
 }
 
@@ -525,8 +549,21 @@ document.addEventListener('change', e => {
     renderCollect(); renderNext();
   }
 });
-$('#all-products').onchange = e => { selected = e.target.checked ? new Set(products.map(p => p.id)) : new Set(); renderProducts(); renderNext(); };
-$('#search').oninput = renderProducts;
+$('#all-products').onchange = async e => {
+  if (e.target.checked) {
+    // Select ALL products matching current search, not just current page
+    const r = await api(`/api/products/ids?search=${encodeURIComponent(productsSearch)}`);
+    selected = new Set(r.ids);
+  } else {
+    selected = new Set();
+  }
+  renderProducts(); renderNext();
+};
+let searchTimer;
+$('#search').oninput = e => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => { productsSearch = e.target.value; loadProducts(); }, 300);
+};
 $('#to-collect').onclick = () => showTab('collect');
 $('#report-filter').onchange = () => currentReport && renderResults(currentReport.products);
 $('#location-filter').onchange = () => { locationFilter = $('#location-filter').value; currentReport && renderResults(currentReport.products); };
@@ -549,9 +586,9 @@ $('#btn-sync').onclick = async () => {
   status.textContent = t('sync.running');
   try {
     const r = await post('/api/dorixona/sync', {});
-    selected = new Set(r.product_ids.slice(0, 500));
-    await loadProducts();
+    selected = new Set();
     pharmacyStock = {};
+    await loadProducts();
     status.textContent = t('sync.done', {stores: r.stores, products: r.unique_products});
     toast(t('sync.done', {stores: r.stores, products: r.unique_products}));
   } catch (x) {
@@ -560,6 +597,38 @@ $('#btn-sync').onclick = async () => {
   } finally {
     btn.disabled = false;
   }
+};
+$('#btn-delete-selected').onclick = async () => {
+  if (!selected.size) return;
+  if (!confirm(t('products.confirmDelete', {n: selected.size}))) return;
+  try {
+    const r = await api('/api/products', {method: 'DELETE', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ids: [...selected]})});
+    selected = new Set();
+    pharmacyStock = {};
+    await loadProducts();
+    toast(t('products.deleted', {n: r.deleted}));
+  } catch (x) { toast(x.message); }
+};
+$('#btn-delete-old').onclick = async () => {
+  if (!confirm(t('products.confirmDeleteOld'))) return;
+  try {
+    // Delete all non-Dorixona batches (Excel imports)
+    const r = await api('/api/products', {method: 'DELETE', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({batch: '__non_dorixona__'})});
+    // Fallback: delete all products not from 03Dorixona batch by getting their ids
+    const all = await api(`/api/products/ids?search=`);
+    const dorixona = await api('/api/products?search=&page=0&page_size=5000');
+    const dorixonaIds = new Set((dorixona.items || []).filter(p => p.sheet === '03Dorixona').map(p => p.id));
+    const toDelete = all.ids.filter(id => !dorixonaIds.has(id));
+    if (toDelete.length) {
+      const r2 = await api('/api/products', {method: 'DELETE', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ids: toDelete})});
+      selected = new Set([...selected].filter(id => dorixonaIds.has(id)));
+      pharmacyStock = {};
+      await loadProducts();
+      toast(t('products.deleted', {n: r2.deleted}));
+    } else {
+      toast(t('products.noneDeleted'));
+    }
+  } catch (x) { toast(x.message); }
 };
 $('#manual-form').onsubmit = async e => {
   e.preventDefault();

@@ -173,15 +173,60 @@ class Store:
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def products(self, ids=None):
+    def products(self, ids=None, search='', page=0, page_size=50):
         with self.connect() as db:
-            if ids is None:
-                rows = db.execute('SELECT * FROM products ORDER BY id').fetchall()
-            elif not ids:
-                return []
-            else:
+            if ids is not None:
+                if not ids:
+                    return []
                 rows = db.execute('SELECT * FROM products WHERE id IN (' + ','.join('?' for _ in ids) + ') ORDER BY id', ids).fetchall()
-        return [dict(id=r['id'], batch=r['batch'], **json.loads(r['data'])) for r in rows]
+                return [dict(id=r['id'], batch=r['batch'], **json.loads(r['data'])) for r in rows]
+            # Paginated + search path
+            like = f'%{search.lower()}%' if search else '%'
+            count = db.execute(
+                "SELECT COUNT(*) FROM products WHERE lower(json_extract(data,'$.name')) LIKE ? OR lower(json_extract(data,'$.manufacturer')) LIKE ?",
+                (like, like)
+            ).fetchone()[0]
+            offset = page * page_size
+            rows = db.execute(
+                "SELECT * FROM products WHERE lower(json_extract(data,'$.name')) LIKE ? OR lower(json_extract(data,'$.manufacturer')) LIKE ? ORDER BY id LIMIT ? OFFSET ?",
+                (like, like, page_size, offset)
+            ).fetchall()
+        items = [dict(id=r['id'], batch=r['batch'], **json.loads(r['data'])) for r in rows]
+        return {'items': items, 'total': count, 'page': page, 'page_size': page_size, 'pages': max(1, (count + page_size - 1) // page_size)}
+
+    def products_all_ids(self, search='') -> list[int]:
+        """Return all product ids matching search (for select-all)."""
+        with self.connect() as db:
+            like = f'%{search.lower()}%' if search else '%'
+            rows = db.execute(
+                "SELECT id FROM products WHERE lower(json_extract(data,'$.name')) LIKE ? OR lower(json_extract(data,'$.manufacturer')) LIKE ? ORDER BY id",
+                (like, like)
+            ).fetchall()
+        return [r['id'] for r in rows]
+
+    def delete_products(self, batch: str | None = None, ids: list[int] | None = None):
+        """Delete products (and their offers/results) by batch name or explicit id list.
+        Returns count deleted."""
+        with self.connect() as db:
+            if ids is not None:
+                if not ids:
+                    return 0
+                ph = ','.join('?' * len(ids))
+                # Cascade: offers → results → products
+                result_ids = [r[0] for r in db.execute(f'SELECT id FROM results WHERE product_id IN ({ph})', ids).fetchall()]
+                if result_ids:
+                    rph = ','.join('?' * len(result_ids))
+                    db.execute(f'DELETE FROM offers WHERE result_id IN ({rph})', result_ids)
+                    db.execute(f'DELETE FROM results WHERE id IN ({rph})', result_ids)
+                db.execute(f'DELETE FROM pharmacy_stock WHERE dori_product_id IN ({ph})', ids)
+                cur = db.execute(f'DELETE FROM products WHERE id IN ({ph})', ids)
+                return cur.rowcount
+            elif batch is not None:
+                prod_ids = [r[0] for r in db.execute('SELECT id FROM products WHERE batch=?', (batch,)).fetchall()]
+                if prod_ids:
+                    return self.delete_products(ids=prod_ids)
+                return 0
+            return 0
 
     def create_run(self, products, sites=None):
         with self.connect() as db:

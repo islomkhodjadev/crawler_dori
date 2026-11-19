@@ -144,8 +144,25 @@ def create_app(db_path=None):
         return {'count': len(ids), 'product_ids': ids}
 
     @app.get('/api/products')
-    def products():
-        return store.products()
+    def products(search: str = '', page: int = 0, page_size: int = 50):
+        page_size = max(10, min(200, page_size))
+        return store.products(search=search, page=page, page_size=page_size)
+
+    @app.get('/api/products/ids')
+    def product_ids(search: str = ''):
+        """All product ids matching search — used for select-all."""
+        return {'ids': store.products_all_ids(search=search)}
+
+    class DeleteProductsRequest(BaseModel):
+        batch: str | None = None
+        ids: list[int] | None = None
+
+    @app.delete('/api/products')
+    def delete_products(body: DeleteProductsRequest):
+        if body.batch is None and body.ids is None:
+            raise HTTPException(400, 'Provide batch or ids')
+        count = store.delete_products(batch=body.batch, ids=body.ids)
+        return {'deleted': count}
 
     @app.post('/api/products')
     def add_product(body: ProductRequest):
