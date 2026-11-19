@@ -133,6 +133,9 @@ def parse_arzon_pharmacies(html, product_name, product_url):
     while i < len(lines):
         if lines[i].startswith('Адрес:'):
             addr = lines[i][len('Адрес:'):].strip()
+            # BeautifulSoup splits <span>Адрес: </span>address into two lines
+            if not addr and i + 1 < len(lines) and not lines[i + 1].startswith('Ориентир:'):
+                addr = lines[i + 1].strip()
             # Pharmacy name: scan backwards for first non-metadata line
             pharmacy_name = ''
             for j in range(i - 1, max(i - 10, -1), -1):
