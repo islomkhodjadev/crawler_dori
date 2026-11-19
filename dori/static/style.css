@@ -168,6 +168,14 @@ dialog::backdrop{background:rgba(18,30,28,.45)}
 button.link.small{font-size:12px;padding:0 2px}
 .price-form{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px}
 .location-badge{font-size:11px;color:var(--muted);background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:1px 6px;margin-left:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px;display:inline-block;vertical-align:middle}
+.sync-card{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.pharmacy-stock-block{background:var(--brand-soft);border-radius:10px;padding:10px 14px;margin-bottom:10px}
+.pharmacy-stock-title{font-size:13px;color:var(--brand);display:block;margin-bottom:8px}
+.pharmacy-stock-list{display:flex;flex-direction:column;gap:4px}
+.pharmacy-stock-row{display:flex;align-items:baseline;gap:8px;font-size:13px;flex-wrap:wrap}
+.pharmacy-name{font-weight:600;color:var(--ink)}
+.pharmacy-addr{font-size:12px}
+.pharmacy-qty{margin-left:auto;font-weight:600;color:var(--brand);white-space:nowrap}
 .price-form input{width:130px;padding:6px 10px}
 .price-form button{padding:6px 12px;font-size:12px}
 

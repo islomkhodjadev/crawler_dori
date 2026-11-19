@@ -509,4 +509,50 @@ def create_app(db_path=None):
         return Response(buf.read(), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                         headers={'Content-Disposition': 'attachment; filename="dori-candidates.xlsx"'})
 
+    # ------------------------------------------------------------------ 03 Dorixona internal API --
+
+    @app.get('/api/dorixona/stores')
+    def dorixona_stores():
+        """Return stores currently in pharmacy_stock (after a sync)."""
+        return {'items': store.stores()}
+
+    @app.post('/api/dorixona/sync')
+    async def dorixona_sync():
+        """Pull stores + stock from the internal API, deduplicate, and import."""
+        from .dorixona_api import fetch_stores, fetch_all_stock, build_import, TOKEN
+        from .adapters import now as _now
+        if not TOKEN:
+            raise HTTPException(503, 'DORIXONA_SERVICE_TOKEN is not set on the server. Add it to .env.')
+        try:
+            stores = await fetch_stores()
+        except Exception as exc:
+            raise HTTPException(502, f'Could not fetch stores: {exc}') from exc
+        try:
+            stock_by_store = await fetch_all_stock(stores)
+        except Exception as exc:
+            raise HTTPException(502, f'Could not fetch stock: {exc}') from exc
+
+        products, pharmacy_stock = build_import(stores, stock_by_store)
+        synced_at = _now()
+        ids = store.import_from_dorixona(products, pharmacy_stock, synced_at)
+        return {
+            'stores': len(stores),
+            'unique_products': len(products),
+            'pharmacy_stock_rows': len(pharmacy_stock),
+            'product_ids': ids,
+            'synced_at': synced_at,
+        }
+
+    @app.get('/api/dorixona/stock')
+    def dorixona_stock(product_ids: str = ''):
+        """Return pharmacy stock rows for given comma-separated dori product ids."""
+        if not product_ids:
+            return {'items': []}
+        try:
+            ids = [int(x) for x in product_ids.split(',') if x.strip()]
+        except ValueError:
+            raise HTTPException(400, 'product_ids must be comma-separated integers')
+        grouped = store.pharmacy_stock_for_products(ids)
+        return {'items': grouped}
+
     return app

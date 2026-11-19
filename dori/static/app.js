@@ -3,6 +3,7 @@ let sourceState = {}, activeRun = false, viewerSocket = null, viewerSite = null;
 let products = [], selected = new Set(), currentRun = null, currentReport = null, aiConfigured = false, agentConnected = false;
 let runs = [], stats = null, expanded = new Set(), openRejected = new Set(), sites = new Set(['arzon', 'oson']);
 let locationFilter = 'all';
+let pharmacyStock = {}; // dori_product_id -> [{store_name, store_address, lat, lng, qty}]
 let lastReportJson = '', lastStatsJson = '', tab = 'products', editingPrice = null;
 const SITE_NAMES = {arzon: 'ArzonApteka', oson: 'OsonApteka'};
 const $ = s => document.querySelector(s);
@@ -327,6 +328,38 @@ function offerLine(p, o) {
       ${diffInfo(p.invoice_price, o.price).html}${locBadge}</div>
     <p class="comment">${esc(o.comment)}</p>${decisionButtons(o)}</div>`;
 }
+function pharmacyStockBlock(productId) {
+  const rows = pharmacyStock[productId];
+  if (!rows || rows.length === 0) return '';
+  return `<div class="pharmacy-stock-block">
+    <strong class="pharmacy-stock-title">📍 ${t('stock.title')}</strong>
+    <div class="pharmacy-stock-list">
+      ${rows.map(r => `<div class="pharmacy-stock-row">
+        <span class="pharmacy-name">${esc(r.store_name)}</span>
+        <span class="pharmacy-addr muted">${esc(r.store_address)}</span>
+        <span class="pharmacy-qty">${t('stock.qty', {n: Math.floor(r.qty)})}</span>
+      </div>`).join('')}
+    </div>
+  </div>`;
+}
+
+async function loadPharmacyStock(productIds) {
+  const missing = productIds.filter(id => !(id in pharmacyStock));
+  if (!missing.length) return;
+  try {
+    const r = await api('/api/dorixona/stock?product_ids=' + missing.join(','));
+    for (const [id, rows] of Object.entries(r.items || {})) {
+      pharmacyStock[parseInt(id)] = rows;
+    }
+    // Mark products with no pharmacy data as empty array
+    for (const id of missing) {
+      if (!(id in pharmacyStock)) pharmacyStock[id] = [];
+    }
+  } catch (_) {
+    for (const id of missing) pharmacyStock[id] = [];
+  }
+}
+
 function updateLocationFilter(entries) {
   const sel = $('#location-filter');
   if (!sel) return;
@@ -371,7 +404,9 @@ function renderResults(entries) {
         <td class="num">${optimalCell(entry)}</td>
         <td class="num">${delta == null ? '—' : `<span class="diff ${delta < 0 ? 'cheaper' : delta > 0 ? 'pricier' : 'same'}">${delta > 0 ? '+' : ''}${delta}%</span>`}</td>
         <td><span class="pill ${status[0]}">${esc(status[1])}</span></td></tr>
-      ${open ? `<tr class="detail"><td colspan="8">${entry.advice ? `<div class="advice"><b>${t('advice.label')}: ${money(entry.advice.price)}</b>
+      ${open ? `<tr class="detail"><td colspan="8">
+        ${pharmacyStockBlock(p.id)}
+        ${entry.advice ? `<div class="advice"><b>${t('advice.label')}: ${money(entry.advice.price)}</b>
           <span class="muted">${t('advice.range', {a: money(entry.advice.low), b: money(entry.advice.high)})}</span><p>${esc(entry.advice.reason)}</p></div>` : ''}
         ${visible.map(o => offerLine(p, o)).join('') || `<p class="muted">${t('results.noListings')}</p>`}
         ${rejected.length ? `<details data-rejected="${p.id}" ${openRejected.has(p.id) ? 'open' : ''}><summary>${t('results.showRejected', {n: rejected.length})}</summary>${rejected.map(o => offerLine(p, o)).join('')}</details>` : ''}
@@ -440,6 +475,7 @@ document.addEventListener('click', async e => {
     if (e.target.closest('a,button,details')) return;
     const id = Number(el.dataset.expand);
     expanded.has(id) ? expanded.delete(id) : expanded.add(id);
+    if (expanded.has(id)) await loadPharmacyStock([id]);
     return renderResults(currentReport.products);
   }
   el.disabled = true;
@@ -505,6 +541,25 @@ $('#upload-form').onsubmit = async e => {
     await loadProducts();
     toast(t('products.imported', {n: r.count, k: selected.size}));
   } catch (x) { toast(x.message); } finally { b.disabled = false; }
+};
+$('#btn-sync').onclick = async () => {
+  const btn = $('#btn-sync');
+  const status = $('#sync-status');
+  btn.disabled = true;
+  status.textContent = t('sync.running');
+  try {
+    const r = await post('/api/dorixona/sync', {});
+    selected = new Set(r.product_ids.slice(0, 500));
+    await loadProducts();
+    pharmacyStock = {};
+    status.textContent = t('sync.done', {stores: r.stores, products: r.unique_products});
+    toast(t('sync.done', {stores: r.stores, products: r.unique_products}));
+  } catch (x) {
+    status.textContent = x.message;
+    toast(x.message);
+  } finally {
+    btn.disabled = false;
+  }
 };
 $('#manual-form').onsubmit = async e => {
   e.preventDefault();

@@ -29,6 +29,20 @@ CREATE TABLE IF NOT EXISTS offers (
  reasons TEXT NOT NULL, reviewed_at TEXT
 );
 CREATE INDEX IF NOT EXISTS offers_result ON offers(result_id);
+CREATE TABLE IF NOT EXISTS pharmacy_stock (
+ id INTEGER PRIMARY KEY,
+ store_id INTEGER NOT NULL,
+ store_name TEXT NOT NULL,
+ store_address TEXT NOT NULL DEFAULT '',
+ lat REAL, lng REAL,
+ dorixona_product_id INTEGER NOT NULL,
+ dori_product_id INTEGER REFERENCES products(id),
+ name TEXT NOT NULL,
+ qty REAL NOT NULL,
+ synced_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS pharmacy_stock_product ON pharmacy_stock(dori_product_id);
+CREATE INDEX IF NOT EXISTS pharmacy_stock_dorixona ON pharmacy_stock(dorixona_product_id);
 CREATE TABLE IF NOT EXISTS price_advice (
  run_id INTEGER NOT NULL, product_id INTEGER NOT NULL, price REAL NOT NULL, low REAL NOT NULL, high REAL NOT NULL,
  reason TEXT NOT NULL, model TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (run_id, product_id)
@@ -51,6 +65,10 @@ class Store:
             for name, declaration in {'manual_price':'REAL','price_edited_at':'TEXT'}.items():
                 if name not in existing:
                     db.execute(f'ALTER TABLE offers ADD COLUMN {name} {declaration}')
+            # Migrate products table: add dorixona_product_id column if missing
+            existing={row['name'] for row in db.execute('PRAGMA table_info(products)')}
+            if 'dorixona_product_id' not in existing:
+                db.execute('ALTER TABLE products ADD COLUMN dorixona_product_id INTEGER')
 
     @contextmanager
     def connect(self):
@@ -74,6 +92,86 @@ class Store:
                                     (batch, json.dumps(product, ensure_ascii=False)))
                 ids.append(cursor.lastrowid)
         return ids
+
+    def import_from_dorixona(self, products: list[dict], pharmacy_stock: list[dict], synced_at: str) -> list[int]:
+        """Import unique products and their per-pharmacy stock from the internal API.
+
+        Existing products with the same dorixona_product_id are reused (not duplicated).
+        pharmacy_stock rows are replaced wholesale on each sync.
+        Returns list of dori product ids (new + reused).
+        """
+        with self.connect() as db:
+            # Build map: dorixona_product_id -> dori product id from previous syncs
+            existing_map = {
+                row['dorixona_product_id']: row['id']
+                for row in db.execute(
+                    "SELECT id, CAST(json_extract(data,'$.dorixona_product_id') AS INTEGER) AS dorixona_product_id "
+                    "FROM products WHERE dorixona_product_id IS NOT NULL"
+                )
+                if row['dorixona_product_id']
+            }
+            ids = []
+            for product in products:
+                dpid = product.get('dorixona_product_id')
+                if dpid and dpid in existing_map:
+                    # Reuse existing product row but update its data
+                    dori_id = existing_map[dpid]
+                    db.execute('UPDATE products SET data=?, dorixona_product_id=? WHERE id=?',
+                               (json.dumps(product, ensure_ascii=False), dpid, dori_id))
+                    ids.append(dori_id)
+                else:
+                    cursor = db.execute(
+                        'INSERT INTO products(batch, data, dorixona_product_id) VALUES (?,?,?)',
+                        ('03Dorixona', json.dumps(product, ensure_ascii=False), dpid)
+                    )
+                    dori_id = cursor.lastrowid
+                    if dpid:
+                        existing_map[dpid] = dori_id
+                    ids.append(dori_id)
+
+            # Rebuild dpid -> dori_id map including newly inserted rows
+            dpid_to_dori = {p.get('dorixona_product_id'): dori_id
+                            for p, dori_id in zip(products, ids)
+                            if p.get('dorixona_product_id')}
+
+            # Replace pharmacy stock: delete all existing rows, re-insert fresh
+            db.execute('DELETE FROM pharmacy_stock')
+            for row in pharmacy_stock:
+                dpid = row['dorixona_product_id']
+                dori_id = dpid_to_dori.get(dpid) or existing_map.get(dpid)
+                db.execute(
+                    'INSERT INTO pharmacy_stock(store_id,store_name,store_address,lat,lng,'
+                    'dorixona_product_id,dori_product_id,name,qty,synced_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                    (row['store_id'], row['store_name'], row['store_address'],
+                     row.get('lat'), row.get('lng'), dpid, dori_id,
+                     row['name'], row['qty'], synced_at)
+                )
+        return ids
+
+    def pharmacy_stock_for_products(self, dori_product_ids: list[int]) -> dict[int, list[dict]]:
+        """Return pharmacy stock rows grouped by dori_product_id."""
+        if not dori_product_ids:
+            return {}
+        placeholders = ','.join('?' * len(dori_product_ids))
+        with self.connect() as db:
+            rows = db.execute(
+                f'SELECT * FROM pharmacy_stock WHERE dori_product_id IN ({placeholders})',
+                dori_product_ids
+            ).fetchall()
+        result: dict[int, list[dict]] = {}
+        for row in rows:
+            pid = row['dori_product_id']
+            result.setdefault(pid, []).append(dict(row))
+        return result
+
+    def stores(self) -> list[dict]:
+        """Return distinct stores from pharmacy_stock."""
+        with self.connect() as db:
+            rows = db.execute(
+                'SELECT DISTINCT store_id, store_name, store_address, lat, lng '
+                'FROM pharmacy_stock ORDER BY store_name'
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def products(self, ids=None):
         with self.connect() as db:
