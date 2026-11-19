@@ -144,14 +144,16 @@ def create_app(db_path=None):
         return {'count': len(ids), 'product_ids': ids}
 
     @app.get('/api/products')
-    def products(search: str = '', page: int = 0, page_size: int = 50):
+    def products(search: str = '', page: int = 0, page_size: int = 50, store_ids: str = ''):
         page_size = max(10, min(200, page_size))
-        return store.products(search=search, page=page, page_size=page_size)
+        sid_list = [int(x) for x in store_ids.split(',') if x.strip().isdigit()] if store_ids else None
+        return store.products(search=search, page=page, page_size=page_size, store_ids=sid_list)
 
     @app.get('/api/products/ids')
-    def product_ids(search: str = ''):
+    def product_ids(search: str = '', store_ids: str = ''):
         """All product ids matching search — used for select-all."""
-        return {'ids': store.products_all_ids(search=search)}
+        sid_list = [int(x) for x in store_ids.split(',') if x.strip().isdigit()] if store_ids else None
+        return {'ids': store.products_all_ids(search=search, store_ids=sid_list)}
 
     class DeleteProductsRequest(BaseModel):
         batch: str | None = None

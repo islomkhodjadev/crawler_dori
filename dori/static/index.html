@@ -41,6 +41,15 @@
         <span class="muted" id="sync-status"></span>
       </div>
     </div>
+    <div class="card" id="store-picker" hidden>
+      <h3 data-i18n="sync.storeTitle"></h3>
+      <p class="muted" data-i18n="sync.storeHint"></p>
+      <div id="store-list" class="store-list"></div>
+      <div class="row-actions" style="margin-top:10px">
+        <button id="btn-store-apply" data-i18n="sync.storeApply"></button>
+        <button class="ghost" id="btn-store-all" data-i18n="sync.storeAll"></button>
+      </div>
+    </div>
     <details class="card manual">
       <summary data-i18n="products.manualToggle"></summary>
       <form id="manual-form">

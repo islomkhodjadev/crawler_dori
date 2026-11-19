@@ -165,43 +165,58 @@ class Store:
         return result
 
     def stores(self) -> list[dict]:
-        """Return distinct stores from pharmacy_stock."""
+        """Return distinct stores from pharmacy_stock with product counts."""
         with self.connect() as db:
             rows = db.execute(
-                'SELECT DISTINCT store_id, store_name, store_address, lat, lng '
-                'FROM pharmacy_stock ORDER BY store_name'
+                'SELECT store_id, store_name, store_address, lat, lng, COUNT(*) as products '
+                'FROM pharmacy_stock GROUP BY store_id ORDER BY store_name'
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def products(self, ids=None, search='', page=0, page_size=50):
+    def products(self, ids=None, search='', page=0, page_size=50, store_ids: list[int] | None = None):
         with self.connect() as db:
             if ids is not None:
                 if not ids:
                     return []
                 rows = db.execute('SELECT * FROM products WHERE id IN (' + ','.join('?' for _ in ids) + ') ORDER BY id', ids).fetchall()
                 return [dict(id=r['id'], batch=r['batch'], **json.loads(r['data'])) for r in rows]
-            # Paginated + search path
+            # Paginated + search + optional store filter
             like = f'%{search.lower()}%' if search else '%'
-            count = db.execute(
-                "SELECT COUNT(*) FROM products WHERE lower(json_extract(data,'$.name')) LIKE ? OR lower(json_extract(data,'$.manufacturer')) LIKE ?",
-                (like, like)
-            ).fetchone()[0]
-            offset = page * page_size
-            rows = db.execute(
-                "SELECT * FROM products WHERE lower(json_extract(data,'$.name')) LIKE ? OR lower(json_extract(data,'$.manufacturer')) LIKE ? ORDER BY id LIMIT ? OFFSET ?",
-                (like, like, page_size, offset)
-            ).fetchall()
+            if store_ids:
+                sph = ','.join('?' * len(store_ids))
+                base_where = (
+                    f"products.id IN (SELECT dori_product_id FROM pharmacy_stock WHERE store_id IN ({sph})) "
+                    f"AND (lower(json_extract(products.data,'$.name')) LIKE ? OR lower(json_extract(products.data,'$.manufacturer')) LIKE ?)"
+                )
+                params_count = [*store_ids, like, like]
+                params_rows  = [*store_ids, like, like, page_size, page * page_size]
+                count = db.execute(f"SELECT COUNT(*) FROM products WHERE {base_where}", params_count).fetchone()[0]
+                rows  = db.execute(f"SELECT * FROM products WHERE {base_where} ORDER BY id LIMIT ? OFFSET ?", params_rows).fetchall()
+            else:
+                base_where = "lower(json_extract(data,'$.name')) LIKE ? OR lower(json_extract(data,'$.manufacturer')) LIKE ?"
+                count = db.execute(f"SELECT COUNT(*) FROM products WHERE {base_where}", (like, like)).fetchone()[0]
+                rows  = db.execute(f"SELECT * FROM products WHERE {base_where} ORDER BY id LIMIT ? OFFSET ?",
+                                   (like, like, page_size, page * page_size)).fetchall()
         items = [dict(id=r['id'], batch=r['batch'], **json.loads(r['data'])) for r in rows]
-        return {'items': items, 'total': count, 'page': page, 'page_size': page_size, 'pages': max(1, (count + page_size - 1) // page_size)}
+        return {'items': items, 'total': count, 'page': page, 'page_size': page_size,
+                'pages': max(1, (count + page_size - 1) // page_size)}
 
-    def products_all_ids(self, search='') -> list[int]:
-        """Return all product ids matching search (for select-all)."""
+    def products_all_ids(self, search='', store_ids: list[int] | None = None) -> list[int]:
+        """Return all product ids matching search and optional store filter (for select-all)."""
         with self.connect() as db:
             like = f'%{search.lower()}%' if search else '%'
-            rows = db.execute(
-                "SELECT id FROM products WHERE lower(json_extract(data,'$.name')) LIKE ? OR lower(json_extract(data,'$.manufacturer')) LIKE ? ORDER BY id",
-                (like, like)
-            ).fetchall()
+            if store_ids:
+                sph = ','.join('?' * len(store_ids))
+                rows = db.execute(
+                    f"SELECT id FROM products WHERE id IN (SELECT dori_product_id FROM pharmacy_stock WHERE store_id IN ({sph})) "
+                    f"AND (lower(json_extract(data,'$.name')) LIKE ? OR lower(json_extract(data,'$.manufacturer')) LIKE ?) ORDER BY id",
+                    [*store_ids, like, like]
+                ).fetchall()
+            else:
+                rows = db.execute(
+                    "SELECT id FROM products WHERE lower(json_extract(data,'$.name')) LIKE ? OR lower(json_extract(data,'$.manufacturer')) LIKE ? ORDER BY id",
+                    (like, like)
+                ).fetchall()
         return [r['id'] for r in rows]
 
     def delete_products(self, batch: str | None = None, ids: list[int] | None = None):

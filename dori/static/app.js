@@ -5,6 +5,8 @@ let runs = [], stats = null, expanded = new Set(), openRejected = new Set(), sit
 let locationFilter = 'all';
 let pharmacyStock = {}; // dori_product_id -> [{store_name, store_address, lat, lng, qty}]
 let productsPage = 0, productsTotal = 0, productsPages = 1, productsSearch = '', PAGE_SIZE = 50;
+let allStores = []; // [{store_id, store_name, store_address, lat, lng, products}]
+let selectedStores = new Set(); // store_ids to filter by
 let lastReportJson = '', lastStatsJson = '', tab = 'products', editingPrice = null;
 const SITE_NAMES = {arzon: 'ArzonApteka', oson: 'OsonApteka'};
 const $ = s => document.querySelector(s);
@@ -172,7 +174,11 @@ function renderPagination() {
 }
 async function loadProducts(keepPage = false) {
   if (!keepPage) productsPage = 0;
-  const data = await api(`/api/products?search=${encodeURIComponent(productsSearch)}&page=${productsPage}&page_size=${PAGE_SIZE}`);
+  let url = `/api/products?search=${encodeURIComponent(productsSearch)}&page=${productsPage}&page_size=${PAGE_SIZE}`;
+  if (selectedStores.size && allStores.length && selectedStores.size < allStores.length) {
+    url += '&store_ids=' + [...selectedStores].join(',');
+  }
+  const data = await api(url);
   products = data.items;
   productsTotal = data.total;
   productsPages = data.pages;
@@ -367,6 +373,38 @@ function pharmacyStockBlock(productId) {
   </div>`;
 }
 
+/* ---------- store picker ---------- */
+async function loadStores() {
+  try {
+    const r = await api('/api/dorixona/stores');
+    allStores = r.items || [];
+    if (allStores.length) {
+      // Default: select all stores
+      selectedStores = new Set(allStores.map(s => s.store_id));
+    }
+    renderStorePicker();
+  } catch (_) {}
+}
+function renderStorePicker() {
+  const picker = $('#store-picker');
+  if (!allStores.length) { picker.hidden = true; return; }
+  picker.hidden = false;
+  $('#store-list').innerHTML = allStores.map(s => `
+    <label class="store-check check">
+      <input type="checkbox" data-store="${s.store_id}" ${selectedStores.has(s.store_id) ? 'checked' : ''}>
+      <span>
+        <strong>${esc(s.store_name)}</strong>
+        <small class="muted">${esc(s.store_address || '')}${s.products ? ` · ${s.products} ${t('sync.storeProducts')}` : ''}</small>
+      </span>
+    </label>`).join('');
+}
+async function applyStoreFilter() {
+  productsPage = 0;
+  selected = new Set();
+  pharmacyStock = {};
+  await loadProducts();
+}
+
 async function loadPharmacyStock(productIds) {
   const missing = productIds.filter(id => !(id in pharmacyStock));
   if (!missing.length) return;
@@ -551,8 +589,11 @@ document.addEventListener('change', e => {
 });
 $('#all-products').onchange = async e => {
   if (e.target.checked) {
-    // Select ALL products matching current search, not just current page
-    const r = await api(`/api/products/ids?search=${encodeURIComponent(productsSearch)}`);
+    let url = `/api/products/ids?search=${encodeURIComponent(productsSearch)}`;
+    if (selectedStores.size && allStores.length && selectedStores.size < allStores.length) {
+      url += '&store_ids=' + [...selectedStores].join(',');
+    }
+    const r = await api(url);
     selected = new Set(r.ids);
   } else {
     selected = new Set();
@@ -588,6 +629,7 @@ $('#btn-sync').onclick = async () => {
     const r = await post('/api/dorixona/sync', {});
     selected = new Set();
     pharmacyStock = {};
+    await loadStores();      // show store picker with fresh data
     await loadProducts();
     status.textContent = t('sync.done', {stores: r.stores, products: r.unique_products});
     toast(t('sync.done', {stores: r.stores, products: r.unique_products}));
@@ -597,6 +639,21 @@ $('#btn-sync').onclick = async () => {
   } finally {
     btn.disabled = false;
   }
+};
+
+// Store picker checkbox events (delegated — list is rebuilt on each render)
+document.addEventListener('change', e => {
+  const storeEl = e.target.dataset?.store;
+  if (storeEl !== undefined) {
+    const id = Number(storeEl);
+    e.target.checked ? selectedStores.add(id) : selectedStores.delete(id);
+  }
+});
+$('#btn-store-apply').onclick = applyStoreFilter;
+$('#btn-store-all').onclick = () => {
+  selectedStores = new Set(allStores.map(s => s.store_id));
+  renderStorePicker();
+  applyStoreFilter();
 };
 $('#btn-delete-selected').onclick = async () => {
   if (!selected.size) return;
@@ -702,7 +759,7 @@ $('#remote-control').onpaste = e => { e.preventDefault(); sendBrowser({type: 'te
     $('#use-ai').checked = Boolean(h.ai_default_enabled);
     $('#logout').hidden = !h.admin_password_set;
     applyLanguage();
-    await loadProducts(); await refreshBrowsers(); await refreshRuns();
+    await loadStores(); await loadProducts(); await refreshBrowsers(); await refreshRuns();
   } catch (x) { toast(x.message); }
   setInterval(async () => {
     try {
