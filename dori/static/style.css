@@ -169,6 +169,9 @@ button.link.small{font-size:12px;padding:0 2px}
 .price-form{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px}
 .location-badge{font-size:11px;color:var(--muted);background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:1px 6px;margin-left:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px;display:inline-block;vertical-align:middle}
 .pharmacy-label{font-size:11px;color:var(--accent);background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:1px 6px;margin-left:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px;display:inline-block;vertical-align:middle;font-weight:600}
+.branch-badge{font-size:11px;color:#1a7a4a;background:#e8f7ee;border:1px solid #a3d9b8;border-radius:5px;padding:1px 6px;margin-left:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px;display:inline-block;vertical-align:middle;font-weight:600;cursor:default}
+@media(prefers-color-scheme:dark){.branch-badge{color:#7ddaaa;background:#0e2a1a;border-color:#2a5c3a}}
+[data-theme="dark"] .branch-badge{color:#7ddaaa;background:#0e2a1a;border-color:#2a5c3a}
 .sync-card{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
 button.danger-ghost,.button.danger-ghost{background:#fff;color:var(--bad);border:1px solid var(--bad)}
 button.danger-ghost:hover{background:var(--bad-soft)}

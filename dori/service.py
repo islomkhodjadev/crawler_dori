@@ -17,12 +17,18 @@ async def crawl(store, run_id, products, sites=('arzon', 'oson'), admin=None, us
                     try:
                         if admin and site == 'oson' and agent_bus and agent_bus.connected():
                             from .adapters import agent_search_oson
+                            from .geocode import attach_nearest_branches
                             offers, details = await agent_search_oson(agent_bus, product, use_ai=use_ai)
+                            if offers:
+                                await attach_nearest_branches(offers, store.stores())
                         elif admin and site == 'arzon' and agent_bus and agent_bus.connected():
                             import os
                             from .adapters import agent_search_arzon
+                            from .geocode import attach_nearest_branches
                             region_id = int(os.getenv('ARZON_REGION_ID', '2114'))
                             offers, details = await agent_search_arzon(agent_bus, product, region_id=region_id)
+                            if offers:
+                                await attach_nearest_branches(offers, store.stores())
                         elif admin:
                             offers, details = await admin.search(site, product, use_ai=use_ai)
                         else:
