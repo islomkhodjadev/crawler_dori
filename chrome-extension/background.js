@@ -206,9 +206,16 @@ async function handleArzonPharmacies(task) {
 
   let tabId = null;
   try {
+    // Step 0: clear the cart first so leftover items don't pollute the pharmacy page
+    const cartTab = await chrome.tabs.create({ url: 'https://arzonapteka.uz/ru/cart', active: false });
+    tabId = cartTab.id;
+    await waitForTabLoad(tabId, PAGE_LOAD_TIMEOUT_MS);
+    await sleep(1500);
+    await clearArzonCart(tabId);
+    await sleep(1500);
+
     // Step 1: open the product page and add to cart
-    const tab = await chrome.tabs.create({ url: product_url, active: false });
-    tabId = tab.id;
+    await chrome.tabs.update(tabId, { url: product_url });
     await waitForTabLoad(tabId, PAGE_LOAD_TIMEOUT_MS);
     await sleep(2500);
 
@@ -256,28 +263,14 @@ async function handleArzonPharmacies(task) {
         text: document.body.innerText,
       }),
     });
-    const { html, url: finalUrl, text } = pageResult?.[0]?.result || {};
+    const { html, url: finalUrl } = pageResult?.[0]?.result || {};
 
-    // Step 4: remove the product from cart (clear cart)
+    // Step 4: clear cart again to leave it clean
     await chrome.tabs.update(tabId, { url: 'https://arzonapteka.uz/ru/cart' });
     await waitForTabLoad(tabId, 15000);
     await sleep(1500);
-    // Click "Удалить все" or individual delete button
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      world: 'MAIN',
-      func: () => {
-        // Try "clear all" button first
-        const clearAll = [...document.querySelectorAll('button')].find(
-          b => /удалить все|очистить|clear all/i.test(b.innerText)
-        );
-        if (clearAll) { clearAll.click(); return; }
-        // Fall back to individual delete buttons
-        const delBtns = [...document.querySelectorAll('button[aria-label*="удалить"], button[aria-label*="Удалить"], button[aria-label*="delete"], button[aria-label*="Remove"]')];
-        delBtns.forEach(b => b.click());
-      },
-    });
-    await sleep(1000);
+    await clearArzonCart(tabId);
+    await sleep(500);
 
     tasksHandled++;
     setStatus('connected');
@@ -287,6 +280,29 @@ async function handleArzonPharmacies(task) {
   } finally {
     if (tabId !== null) chrome.tabs.remove(tabId).catch(() => {});
   }
+}
+
+async function clearArzonCart(tabId) {
+  // Click "Очистить корзину" and confirm the dialog that appears
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    world: 'MAIN',
+    func: () => {
+      const btn = [...document.querySelectorAll('button')].find(b => /очистить корзину/i.test(b.innerText));
+      if (btn) btn.click();
+    },
+  });
+  // Wait for confirmation dialog to appear
+  await sleep(800);
+  // Click the "Очистить" confirm button (exact text, not "Очистить корзину")
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    world: 'MAIN',
+    func: () => {
+      const btn = [...document.querySelectorAll('button')].find(b => b.innerText.trim() === 'Очистить');
+      if (btn) btn.click();
+    },
+  });
 }
 
 function sendError(id, message) {

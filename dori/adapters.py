@@ -110,8 +110,21 @@ async def agent_search_oson(agent_bus, product, use_ai=None):
     return [], {'status': 'no_results', 'url': final_url, 'pages': 1}
 
 
+def _name_similarity(a, b):
+    """Return fraction of words in a that appear in b (case-insensitive)."""
+    wa = set(re.findall(r'\w+', a.lower()))
+    wb = set(re.findall(r'\w+', b.lower()))
+    if not wa:
+        return 0.0
+    return len(wa & wb) / len(wa)
+
+
 def parse_arzon_pharmacies(html, product_name, product_url):
-    """Parse the /checkout/pharmacies SSR page and return one offer per pharmacy."""
+    """Parse the /checkout/pharmacies SSR page and return one offer per pharmacy.
+
+    If the cart had only one item (the target product), every price line is for it.
+    If somehow multiple items remain, we match by product name proximity.
+    """
     soup = BeautifulSoup(html, 'html.parser')
     text = soup.get_text('\n', strip=True)
     lines = [l.strip() for l in text.splitlines() if l.strip()]
@@ -128,19 +141,32 @@ def parse_arzon_pharmacies(html, product_name, product_url):
                     continue
                 pharmacy_name = l
                 break
-            # Individual product line and price: scan forward until action button
+            # Scan forward to find price for the target product.
+            # Pattern: product name line → "1 шт × N сўм" on next line.
+            # Fall back to first price if no name match found.
             product_price = None
-            for j in range(i + 1, min(i + 25, len(lines))):
+            last_name_match_score = 0.0
+            pending_name_score = 0.0
+            for j in range(i + 1, min(i + 40, len(lines))):
                 l = lines[j]
                 if l in ('Забронировать', 'Выбрать', 'Полная информация'):
                     break
-                # "1 шт × 12 700 сўм"
-                m = re.search(r'(\d[\d\s]+)\s*сўм', l)
-                if m and '×' in l:
+                # Detect a product name line (not a price/metadata)
+                if '×' not in l and not re.search(r'\d{2}:\d{2}|Нет в наличии|В наличии|Доступно', l):
+                    score = _name_similarity(product_name, l)
+                    if score > 0.3:
+                        pending_name_score = score
+                # Price line: "1 шт × 12 700 сўм"
+                if '×' in l and re.search(r'\d[\d\s]+\s*сўм', l):
                     val = price_value(l)
                     if val and val > 0:
-                        product_price = val
-                        break
+                        # Prefer price that follows a matching product name
+                        if pending_name_score > last_name_match_score:
+                            product_price = val
+                            last_name_match_score = pending_name_score
+                        elif product_price is None:
+                            product_price = val  # first price as fallback
+                    pending_name_score = 0.0
             if pharmacy_name and product_price:
                 offers.append(dict(
                     site='arzon', site_id='', name=product_name,
