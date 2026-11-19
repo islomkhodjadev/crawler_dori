@@ -386,6 +386,12 @@ def create_app(db_path=None):
             raise HTTPException(409, 'Нет подтверждённых цен конкурентов — сначала подтвердите совпадения.')
         ours = entry['product'].get('invoice_price')
         prices = [o['price'] for o in confirmed] + ([ours] if ours else [])
+        # Filter outliers: drop prices more than 2.5× below or above the median
+        from statistics import median
+        med = median(prices)
+        prices_filtered = [p for p in prices if med / 3 <= p <= med * 3]
+        if prices_filtered:
+            prices = prices_filtered
         low, high = min(prices), max(prices)
         try:
             advice = await recommend_price(entry['product'], ours, confirmed, low, high)

@@ -357,12 +357,13 @@ function renderReview() {
 }
 function offerLine(p, o) {
   const locText = o.pharmacy_address || (o.location && o.location !== 'Узбекистан' && o.location !== 'Uzbekistan (site default)' ? o.location : '');
+  const pharmacyLabel = o.pharmacy_name ? `<span class="pharmacy-label">🏪 ${esc(o.pharmacy_name)}</span>` : '';
   const locBadge = locText ? `<span class="location-badge">📍 ${esc(locText)}</span>` : '';
   return `<div class="offer ${o.match_status}">
     <div class="offer-main"><span class="site-tag ${o.site}">${siteName(o.site)}</span>
       <a href="${esc(safeUrl(o.url))}" target="_blank" rel="noopener">${esc(o.name)} ↗</a>
       ${priceBlock(o)} <span class="pill ${o.match_status === 'accepted' ? 'ok' : o.match_status === 'review' ? 'warn' : 'bad'}">${t('match.' + o.match_status)}</span>
-      ${diffInfo(p.invoice_price, o.price).html}${locBadge}</div>
+      ${diffInfo(p.invoice_price, o.price).html}${pharmacyLabel}${locBadge}</div>
     <p class="comment">${esc(o.comment)}</p>${decisionButtons(o)}</div>`;
 }
 function pharmacyStockBlock(productId) {
