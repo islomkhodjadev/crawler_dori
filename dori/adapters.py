@@ -110,6 +110,94 @@ async def agent_search_oson(agent_bus, product, use_ai=None):
     return [], {'status': 'no_results', 'url': final_url, 'pages': 1}
 
 
+def parse_arzon_pharmacies(html, product_name, product_url):
+    """Parse the /checkout/pharmacies SSR page and return one offer per pharmacy."""
+    soup = BeautifulSoup(html, 'html.parser')
+    text = soup.get_text('\n', strip=True)
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    offers = []
+    i = 0
+    while i < len(lines):
+        if lines[i].startswith('Адрес:'):
+            addr = lines[i][len('Адрес:'):].strip()
+            # Pharmacy name: scan backwards for first non-metadata line
+            pharmacy_name = ''
+            for j in range(i - 1, max(i - 10, -1), -1):
+                l = lines[j]
+                if re.match(r'^\d{2}:\d{2}|^\d+\s*[чд]$|^Бронир|^Лучш|^Выбор|^Ближе|^Дешевле|^Открыто|^24\/7|^С бронир|^Ориентир', l):
+                    continue
+                pharmacy_name = l
+                break
+            # Individual product line and price: scan forward until action button
+            product_price = None
+            for j in range(i + 1, min(i + 25, len(lines))):
+                l = lines[j]
+                if l in ('Забронировать', 'Выбрать', 'Полная информация'):
+                    break
+                # "1 шт × 12 700 сўм"
+                m = re.search(r'(\d[\d\s]+)\s*сўм', l)
+                if m and '×' in l:
+                    val = price_value(l)
+                    if val and val > 0:
+                        product_price = val
+                        break
+            if pharmacy_name and product_price:
+                offers.append(dict(
+                    site='arzon', site_id='', name=product_name,
+                    manufacturer='', price=product_price, currency='UZS',
+                    url=product_url, observed_at=now(),
+                    price_kind='per_pharmacy',
+                    location=addr, pharmacy_name=pharmacy_name, pharmacy_address=addr,
+                ))
+        i += 1
+    return offers
+
+
+async def agent_search_arzon(agent_bus, product, region_id=2114):
+    """Fetch per-pharmacy ArzonApteka prices via Chrome extension.
+    Adds the product to cart, loads the pharmacy chooser page, parses pharmacy list, clears cart."""
+    from .matching import search_term
+
+    # Build the product detail URL — we need the site_id from the search page first
+    # First do a normal agent fetch of the search page to get the product URL
+    query = search_term(product, site='arzon')
+    search_url = 'https://arzonapteka.uz/ru/search?' + urlencode({'q': query})
+    log.info('agent arzon_pharmacies: fetching search page product_id=%s query=%r', product.get('id'), query)
+    search_result = await agent_bus.fetch(search_url, 'arzon')
+    if not search_result or not search_result.get('html'):
+        log.warning('agent arzon_pharmacies: search fetch failed product_id=%s', product.get('id'))
+        return [], {'status': 'error', 'error': 'arzon search fetch failed'}
+
+    # Parse search results to get the product page URL
+    search_offers = parse_arzon(search_result['html'], search_result.get('url', search_url))
+    if not search_offers:
+        return [], {'status': 'no_results', 'url': search_url, 'pages': 1}
+
+    # Use the best-matching product URL (first result = most relevant)
+    product_url = search_offers[0]['url']
+    product_name = search_offers[0]['name']
+    log.info('agent arzon_pharmacies: got product_url=%s name=%r', product_url, product_name)
+
+    # Now ask the extension to do the multi-step pharmacy fetch
+    result = await agent_bus.fetch_arzon_pharmacies(product_url, region_id)
+    if not result or not result.get('html'):
+        log.warning('agent arzon_pharmacies: pharmacy fetch failed product_id=%s', product.get('id'))
+        return [], {'status': 'error', 'error': 'arzon pharmacy page fetch failed'}
+
+    offers = parse_arzon_pharmacies(result['html'], product_name, product_url)
+    if not offers:
+        log.warning('agent arzon_pharmacies: no pharmacies parsed product_id=%s url=%s', product.get('id'), result.get('url'))
+        # Fall back to the search result prices (site-wide minimum)
+        return search_offers, {'status': 'ok', 'url': search_url, 'pages': 1,
+                               'extraction_method': 'agent_search_fallback',
+                               'scope': 'ArzonApteka minimum prices (pharmacy page parse failed)'}
+
+    log.info('agent arzon_pharmacies: parsed %d pharmacy offers product_id=%s', len(offers), product.get('id'))
+    return offers, {'status': 'ok', 'url': result.get('url', product_url), 'pages': 1,
+                    'extraction_method': 'agent_pharmacy_page',
+                    'scope': f'ArzonApteka per-pharmacy prices (region {region_id})'}
+
+
 def price_value(text):
     text = text.replace('\xa0', ' ').replace('\u202f', ' ')
     m = re.search(r'(\d[\d ]*(?:[.,]\d{1,2})?)\s*(?:с[ўу]м|so[ʻ’\']?m|uzs)', text, re.I)
@@ -428,6 +516,15 @@ class BrowserCrawler:
             if details.get('status') in ('ok', 'no_results'):
                 return offers, details
             # Fall through to server-side browser as last resort
+
+        # Agent shortcut for ArzonApteka: when user is logged in via extension,
+        # use the per-pharmacy checkout page to get prices for each branch in the region.
+        if site == 'arzon' and self.agent_bus and self.agent_bus.connected() and page is None:
+            region_id = int(os.getenv('ARZON_REGION_ID', '2114'))
+            offers, details = await agent_search_arzon(self.agent_bus, product, region_id=region_id)
+            if details.get('status') in ('ok', 'no_results'):
+                return offers, details
+            # Fall through to server-side browser on error
 
         own_page = page is None
         page = page or await self.context.new_page()

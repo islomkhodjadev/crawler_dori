@@ -56,28 +56,42 @@ class AgentBus:
             self._websockets.remove(ws)
             log.info('agent disconnected total=%d', len(self._websockets))
 
-    async def fetch(self, url: str, site: str) -> Optional[dict]:
-        """Ask a connected extension to fetch url. Returns {html, url, status} or None."""
+    async def _send_task(self, payload: dict, timeout: int = FETCH_TIMEOUT) -> Optional[dict]:
+        """Low-level: send a task to the extension and await its response."""
         if not self._websockets:
             return None
-        ws = self._websockets[-1]  # use most recently connected agent
+        ws = self._websockets[-1]
         task_id = str(uuid.uuid4())
+        payload = {**payload, 'id': task_id}
         loop = asyncio.get_event_loop()
         fut: asyncio.Future = loop.create_future()
         self._pending[task_id] = fut
         try:
-            await ws.send_json({'id': task_id, 'type': 'fetch', 'url': url, 'site': site})
-            log.info('agent fetch id=%s site=%s url=%.120s', task_id, site, url)
-            result = await asyncio.wait_for(fut, timeout=FETCH_TIMEOUT)
+            await ws.send_json(payload)
+            result = await asyncio.wait_for(fut, timeout=timeout)
             if 'error' in result:
-                log.warning('agent fetch error id=%s: %s', task_id, result['error'])
+                log.warning('agent task error id=%s: %s', task_id, result['error'])
                 return None
             return result
         except asyncio.TimeoutError:
-            log.warning('agent fetch timeout id=%s site=%s', task_id, site)
+            log.warning('agent task timeout id=%s type=%s', task_id, payload.get('type'))
             self._pending.pop(task_id, None)
             return None
         except Exception as exc:
-            log.warning('agent fetch failed id=%s: %s: %s', task_id, type(exc).__name__, exc)
+            log.warning('agent task failed id=%s: %s: %s', task_id, type(exc).__name__, exc)
             self._pending.pop(task_id, None)
             return None
+
+    async def fetch(self, url: str, site: str) -> Optional[dict]:
+        """Ask a connected extension to fetch url. Returns {html, url, status} or None."""
+        log.info('agent fetch site=%s url=%.120s', site, url)
+        return await self._send_task({'type': 'fetch', 'url': url, 'site': site})
+
+    async def fetch_arzon_pharmacies(self, product_url: str, region_id: int) -> Optional[dict]:
+        """Ask extension to: add product to cart, load pharmacy chooser, return HTML, clear cart."""
+        log.info('agent arzon_pharmacies product_url=%.120s region_id=%s', product_url, region_id)
+        # Multi-step task takes longer: load product + pharmacy page + cart clear
+        return await self._send_task(
+            {'type': 'arzon_pharmacies', 'product_url': product_url, 'region_id': region_id},
+            timeout=90,
+        )

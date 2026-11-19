@@ -84,6 +84,9 @@ function connect() {
     if (msg.type === 'fetch' && msg.id && msg.url) {
       await handleFetch(msg);
     }
+    if (msg.type === 'arzon_pharmacies' && msg.id && msg.product_url) {
+      await handleArzonPharmacies(msg);
+    }
   };
 
   ws.onerror = (err) => {
@@ -193,6 +196,96 @@ async function injectGeoOverride(tabId, lat, lon) {
     });
   } catch (_) {
     // Best-effort; tab may not be ready yet
+  }
+}
+
+// ------------------------------------------------------------------ arzon per-pharmacy prices --
+
+async function handleArzonPharmacies(task) {
+  const { id, product_url, region_id } = task;
+
+  let tabId = null;
+  try {
+    // Step 1: open the product page and add to cart
+    const tab = await chrome.tabs.create({ url: product_url, active: false });
+    tabId = tab.id;
+    await waitForTabLoad(tabId, PAGE_LOAD_TIMEOUT_MS);
+    await sleep(2500);
+
+    // Set region in localStorage before interacting
+    if (region_id) {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        world: 'MAIN',
+        func: (rid) => { try { localStorage.setItem('arzon.region.v1', String(rid)); } catch(_) {} },
+        args: [region_id],
+      });
+    }
+
+    // Click "В корзину" (Add to cart) button
+    const addResult = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      func: () => {
+        const btn = [...document.querySelectorAll('button')].find(b => b.innerText.trim() === 'В корзину');
+        if (btn) { btn.click(); return 'clicked'; }
+        return 'not found';
+      },
+    });
+    const addStatus = addResult?.[0]?.result;
+    if (addStatus !== 'clicked') {
+      sendError(id, 'Add to cart button not found on ' + product_url);
+      chrome.tabs.remove(tabId).catch(() => {});
+      tabId = null;
+      return;
+    }
+    await sleep(1500);
+
+    // Step 2: navigate to checkout/pharmacies?start=best_price (sorted by price, no geo needed)
+    await chrome.tabs.update(tabId, { url: 'https://arzonapteka.uz/ru/checkout/pharmacies?start=best_price' });
+    await waitForTabLoad(tabId, PAGE_LOAD_TIMEOUT_MS);
+    await sleep(3000);
+
+    // Step 3: read pharmacy list from the SSR page
+    const pageResult = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      func: () => ({
+        html: document.documentElement.outerHTML,
+        url: location.href,
+        text: document.body.innerText,
+      }),
+    });
+    const { html, url: finalUrl, text } = pageResult?.[0]?.result || {};
+
+    // Step 4: remove the product from cart (clear cart)
+    await chrome.tabs.update(tabId, { url: 'https://arzonapteka.uz/ru/cart' });
+    await waitForTabLoad(tabId, 15000);
+    await sleep(1500);
+    // Click "Удалить все" or individual delete button
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      func: () => {
+        // Try "clear all" button first
+        const clearAll = [...document.querySelectorAll('button')].find(
+          b => /удалить все|очистить|clear all/i.test(b.innerText)
+        );
+        if (clearAll) { clearAll.click(); return; }
+        // Fall back to individual delete buttons
+        const delBtns = [...document.querySelectorAll('button[aria-label*="удалить"], button[aria-label*="Удалить"], button[aria-label*="delete"], button[aria-label*="Remove"]')];
+        delBtns.forEach(b => b.click());
+      },
+    });
+    await sleep(1000);
+
+    tasksHandled++;
+    setStatus('connected');
+    ws.send(JSON.stringify({ id, html: html || '', url: finalUrl || product_url, status: 200 }));
+  } catch (err) {
+    sendError(id, err.message || String(err));
+  } finally {
+    if (tabId !== null) chrome.tabs.remove(tabId).catch(() => {});
   }
 }
 
