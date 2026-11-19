@@ -133,8 +133,13 @@ async def agent_search_oson(agent_bus, product, use_ai=None):
 
     offers, html, final_url = fetched
     if offers:
-        # Try to get per-pharmacy prices from the best-matching product page
-        product_url = offers[0].get('url') if offers else None
+        # Try to get per-pharmacy prices from the best-matching product page.
+        # Only follow a URL that points to a product page, not the search page itself.
+        product_url = next(
+            (o.get('url') for o in offers
+             if o.get('url') and '/product' in (o.get('url') or '') and 'search' not in (o.get('url') or '')),
+            None
+        )
         if product_url and agent_bus:
             region_ids = [int(x) for x in os.getenv('OSON_REGION_IDS', '25').split(',') if x.strip().isdigit()]
             log.info('agent oson_pharmacies: fetching product page product_id=%s url=%s', product.get('id'), product_url)
