@@ -69,6 +69,56 @@ async def _fetch_oson_page(agent_bus, query):
     return offers, html, final_url
 
 
+def parse_oson_pharmacies(data, product_name, product_url):
+    """Extract per-pharmacy offers from Oson product page SSR JSON (Pinia state or script tag)."""
+    offers = []
+    try:
+        import json as _json
+        # data may be a JSON string (from Pinia) or raw HTML
+        if isinstance(data, str) and data.strip().startswith('{'):
+            state = _json.loads(data)
+            pos_list = state.get('posList') or []
+            for ph in pos_list:
+                name = ph.get('name', '')
+                addr = ph.get('address', '')
+                region = ph.get('regionName', '') or ph.get('parentRegionName', '')
+                price = ph.get('totalAmount') or ph.get('minPrice')
+                if name and price and price > 0:
+                    offers.append(dict(
+                        site='oson', site_id=ph.get('slug', ''), name=product_name,
+                        manufacturer='', price=float(price), currency='UZS',
+                        url=product_url, observed_at=now(),
+                        price_kind='per_pharmacy',
+                        location=region, pharmacy_name=name, pharmacy_address=addr,
+                    ))
+        elif isinstance(data, str) and '<html' in data.lower():
+            # SSR HTML — parse the script[type="application/json"] array
+            soup = BeautifulSoup(data, 'html.parser')
+            script = soup.find('script', {'type': 'application/json'})
+            if script:
+                arr = _json.loads(script.string)
+                # Find the posList index by scanning for pharmacy-shaped dicts
+                for item in arr:
+                    if isinstance(item, dict) and 'slug' in item and 'name' in item and 'totalAmount' in item:
+                        name = arr[item['name']] if isinstance(item['name'], int) else item.get('name', '')
+                        addr_raw = arr[item['address']] if isinstance(item.get('address'), int) else item.get('address', '')
+                        region_raw = arr[item.get('regionName', 0)] if isinstance(item.get('regionName'), int) else item.get('regionName', '')
+                        price_raw = arr[item['totalAmount']] if isinstance(item.get('totalAmount'), int) else item.get('totalAmount')
+                        if name and isinstance(name, str) and price_raw and isinstance(price_raw, (int, float)) and price_raw > 0:
+                            offers.append(dict(
+                                site='oson', site_id='', name=product_name,
+                                manufacturer='', price=float(price_raw), currency='UZS',
+                                url=product_url, observed_at=now(),
+                                price_kind='per_pharmacy',
+                                location=region_raw if isinstance(region_raw, str) else '',
+                                pharmacy_name=name,
+                                pharmacy_address=addr_raw if isinstance(addr_raw, str) else '',
+                            ))
+    except Exception as exc:
+        log.warning('parse_oson_pharmacies failed: %s', exc)
+    return offers
+
+
 async def agent_search_oson(agent_bus, product, use_ai=None):
     """Fetch Oson search results through the connected Chrome extension agent.
     If the primary search returns no parseable offers, try AI-generated name variants."""
@@ -83,6 +133,22 @@ async def agent_search_oson(agent_bus, product, use_ai=None):
 
     offers, html, final_url = fetched
     if offers:
+        # Try to get per-pharmacy prices from the best-matching product page
+        product_url = offers[0].get('url') if offers else None
+        if product_url and agent_bus:
+            region_ids = [int(x) for x in os.getenv('OSON_REGION_IDS', '25').split(',') if x.strip().isdigit()]
+            log.info('agent oson_pharmacies: fetching product page product_id=%s url=%s', product.get('id'), product_url)
+            ph_result = await agent_bus.fetch_oson_pharmacies(product_url, region_ids)
+            if ph_result:
+                ph_data = ph_result.get('data') or ph_result.get('html') or ''
+                ph_name = offers[0].get('name', product.get('name', ''))
+                ph_offers = parse_oson_pharmacies(ph_data, ph_name, product_url)
+                if ph_offers:
+                    log.info('agent oson_pharmacies: parsed %d pharmacy offers product_id=%s', len(ph_offers), product.get('id'))
+                    return ph_offers, {'status': 'ok', 'url': product_url, 'pages': 1,
+                                       'extraction_method': 'agent_oson_pharmacy_page',
+                                       'scope': f'Oson per-pharmacy prices (region {region_ids})'}
+                log.warning('agent oson_pharmacies: no pharmacies parsed, falling back to search offers product_id=%s', product.get('id'))
         return offers, {'status': 'ok', 'url': final_url, 'pages': 1,
                         'extraction_method': 'agent_json_ld' if parse_oson_jsonld(html, final_url) else 'agent_visible_cards',
                         'scope': 'Oson prices via Chrome extension agent (user browser)'}

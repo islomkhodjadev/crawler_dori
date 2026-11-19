@@ -90,8 +90,15 @@ class AgentBus:
     async def fetch_arzon_pharmacies(self, product_url: str, region_id: int) -> Optional[dict]:
         """Ask extension to: add product to cart, load pharmacy chooser, return HTML, clear cart."""
         log.info('agent arzon_pharmacies product_url=%.120s region_id=%s', product_url, region_id)
-        # Multi-step task takes longer: load product + pharmacy page + cart clear
         return await self._send_task(
             {'type': 'arzon_pharmacies', 'product_url': product_url, 'region_id': region_id},
             timeout=90,
+        )
+
+    async def fetch_oson_pharmacies(self, product_url: str, region_ids: list) -> Optional[dict]:
+        """Ask extension to: set Oson region, fetch product page, return SSR HTML with per-pharmacy prices."""
+        log.info('agent oson_pharmacies product_url=%.120s region_ids=%s', product_url, region_ids)
+        return await self._send_task(
+            {'type': 'oson_pharmacies', 'product_url': product_url, 'region_ids': region_ids},
+            timeout=60,
         )

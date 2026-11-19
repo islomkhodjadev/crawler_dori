@@ -87,6 +87,9 @@ function connect() {
     if (msg.type === 'arzon_pharmacies' && msg.id && msg.product_url) {
       await handleArzonPharmacies(msg);
     }
+    if (msg.type === 'oson_pharmacies' && msg.id && msg.product_url) {
+      await handleOsonPharmacies(msg);
+    }
   };
 
   ws.onerror = (err) => {
@@ -303,6 +306,65 @@ async function clearArzonCart(tabId) {
       if (btn) btn.click();
     },
   });
+}
+
+// ------------------------------------------------------------------ oson per-pharmacy prices --
+
+async function handleOsonPharmacies(task) {
+  const { id, product_url, region_ids } = task;
+  let tabId = null;
+  try {
+    // Open product page; region is set via cookie before load
+    const tab = await chrome.tabs.create({ url: 'about:blank', active: false });
+    tabId = tab.id;
+
+    // Set region cookie so SSR returns pharmacies for the right district
+    if (region_ids && region_ids.length) {
+      const regionValue = region_ids.join('-');
+      await chrome.cookies.set({
+        url: 'https://osonapteka.uz',
+        name: 'regions',
+        value: regionValue,
+        domain: '.osonapteka.uz',
+        path: '/',
+      }).catch(() => {});
+    }
+
+    // Navigate to product page
+    await chrome.tabs.update(tabId, { url: product_url });
+    await waitForTabLoad(tabId, PAGE_LOAD_TIMEOUT_MS);
+    await sleep(2000);
+
+    // Extract per-pharmacy data from Pinia/SSR state
+    const result = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      func: () => {
+        try {
+          const app = document.querySelector('#__nuxt')?.__vue_app__;
+          const pinia = app?.config?.globalProperties?.$pinia;
+          const posStore = pinia?.state?.value?.['PosProductStore'];
+          if (posStore) return { source: 'pinia', data: JSON.stringify(posStore) };
+        } catch (_) {}
+        // Fallback: read SSR JSON script tag
+        const scripts = [...document.querySelectorAll('script[type="application/json"]')];
+        return {
+          source: 'ssr',
+          html: document.documentElement.outerHTML,
+          url: location.href,
+        };
+      },
+    });
+
+    const res = result?.[0]?.result || {};
+    tasksHandled++;
+    setStatus('connected');
+    ws.send(JSON.stringify({ id, ...res, url: product_url, status: 200 }));
+  } catch (err) {
+    sendError(id, err.message || String(err));
+  } finally {
+    if (tabId !== null) chrome.tabs.remove(tabId).catch(() => {});
+  }
 }
 
 function sendError(id, message) {
