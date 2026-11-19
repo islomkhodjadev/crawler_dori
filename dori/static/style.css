@@ -167,6 +167,7 @@ dialog::backdrop{background:rgba(18,30,28,.45)}
 .price-wrap .edited{width:100%;margin:0;color:var(--warn);font-weight:600}
 button.link.small{font-size:12px;padding:0 2px}
 .price-form{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px}
+.location-badge{font-size:11px;color:var(--muted);background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:1px 6px;margin-left:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px;display:inline-block;vertical-align:middle}
 .price-form input{width:130px;padding:6px 10px}
 .price-form button{padding:6px 12px;font-size:12px}
 

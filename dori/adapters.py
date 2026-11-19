@@ -135,7 +135,6 @@ def parse_arzon(html, page_url):
         title = next((p for p in paragraphs if p.get_text(' ', strip=True) == name), None)
         manufacturer = ''
         if title:
-            # Observed detailed cards place a country + manufacturer span after title.
             sibling = title.find_next_sibling('span')
             if sibling:
                 manufacturer = sibling.get_text(' ', strip=True)
@@ -144,9 +143,38 @@ def parse_arzon(html, page_url):
         if urlparse(url).hostname != 'arzonapteka.uz':
             continue
         site_id = url.rstrip('/').rsplit('-', 1)[-1]
+
+        # Try to extract pharmacy branch name and address from the card.
+        # ArzonApteka shows them in spans/divs with address-like selectors.
+        pharmacy_name = ''
+        pharmacy_address = ''
+        for sel in ('span[class*="pharmacy"]', 'div[class*="pharmacy"]', 'span[class*="branch"]',
+                    'span[class*="address"]', 'div[class*="address"]', 'span[class*="location"]'):
+            el = card.select_one(sel)
+            if el:
+                text = el.get_text(' ', strip=True)
+                if text and len(text) > 3:
+                    if 'address' in sel or 'location' in sel:
+                        pharmacy_address = text
+                    else:
+                        pharmacy_name = text
+                    break
+        # Fallback: look for any small text that looks like a street address (contains "ул.", "str.", district names)
+        if not pharmacy_address:
+            addr_pattern = re.compile(r'(?:ул\.|улица|str\.|кўча|district|район|тум|шоссе|пр-т|пр\.)', re.I)
+            for el in card.find_all(['span', 'div', 'small']):
+                text = el.get_text(' ', strip=True)
+                if addr_pattern.search(text) and len(text) < 200:
+                    pharmacy_address = text
+                    break
+
+        location_parts = [p for p in [pharmacy_name, pharmacy_address] if p]
+        location = ', '.join(location_parts) if location_parts else 'Узбекистан'
+
         offers.append(dict(site='arzon', site_id=site_id, name=name, manufacturer=manufacturer,
                            price=price, currency='UZS', url=url, observed_at=now(),
-                           price_kind='advertised_minimum', location='Uzbekistan (site default)'))
+                           price_kind='advertised_minimum', location=location,
+                           pharmacy_name=pharmacy_name, pharmacy_address=pharmacy_address))
     return list({(o['url'], o['price']): o for o in offers}.values())
 
 

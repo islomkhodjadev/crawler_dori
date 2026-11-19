@@ -114,6 +114,20 @@
   </div>
 </div>
 
+<div class="card">
+  <div style="font-size:12px;font-weight:600;color:var(--muted)">📍 Геолокация · Location <span style="font-weight:400">(опционально)</span></div>
+  <div class="row">
+    <input id="lat" type="number" step="any" placeholder="Широта · Lat (41.29…)" style="flex:1">
+    <input id="lon" type="number" step="any" placeholder="Долгота · Lon (69.24…)" style="flex:1">
+  </div>
+  <div class="row">
+    <button id="btn-detect-geo" style="flex:1">Определить · Detect</button>
+    <button id="btn-clear-geo" style="flex:1">Сбросить · Clear</button>
+  </div>
+  <div id="geo-status" style="font-size:11px;color:var(--muted)"></div>
+  <div class="hint" style="margin-top:0">Если указаны координаты, ArzonApteka будет показывать аптеки рядом с этой точкой.<br>If set, ArzonApteka returns pharmacies near this location.</div>
+</div>
+
 <div class="hint">
   После подключения оставьте Chrome открытым.<br>
   Агент будет получать запросы от сервера и загружать страницы Oson через ваш браузер.<br><br>

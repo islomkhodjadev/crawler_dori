@@ -21,13 +21,17 @@ let password = '';
 let status = 'disconnected'; // 'disconnected' | 'connecting' | 'connected' | 'error'
 let lastError = '';
 let tasksHandled = 0;
+let geoLat = null;
+let geoLon = null;
 
 // ------------------------------------------------------------------ storage --
 
 async function loadConfig() {
-  const data = await chrome.storage.local.get(['serverUrl', 'password']);
+  const data = await chrome.storage.local.get(['serverUrl', 'password', 'geoLat', 'geoLon']);
   serverUrl = data.serverUrl || '';
   password = data.password || '';
+  geoLat = data.geoLat ?? null;
+  geoLon = data.geoLon ?? null;
 }
 
 async function saveConfig(url, pw) {
@@ -134,6 +138,12 @@ async function handleFetch(task) {
     const tab = await chrome.tabs.create({ url, active: false });
     tabId = tab.id;
 
+    // If geolocation is configured, inject an override immediately so the page
+    // receives our coordinates when it calls navigator.geolocation.getCurrentPosition.
+    if (geoLat != null && geoLon != null && site === 'arzon') {
+      await injectGeoOverride(tabId, parseFloat(geoLat), parseFloat(geoLon));
+    }
+
     // Wait for the tab to finish loading
     await waitForTabLoad(tabId, PAGE_LOAD_TIMEOUT_MS);
 
@@ -161,6 +171,28 @@ async function handleFetch(task) {
     if (tabId !== null) {
       chrome.tabs.remove(tabId).catch(() => {});
     }
+  }
+}
+
+// Inject a geolocation override into a tab so the site gets our coordinates.
+// Uses executeScript with world:'MAIN' to override navigator.geolocation directly.
+async function injectGeoOverride(tabId, lat, lon) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      func: (latitude, longitude) => {
+        const position = {
+          coords: { latitude, longitude, accuracy: 100, altitude: null, altitudeAccuracy: null, heading: null, speed: null },
+          timestamp: Date.now(),
+        };
+        navigator.geolocation.getCurrentPosition = (success) => success(position);
+        navigator.geolocation.watchPosition = (success) => { success(position); return 1; };
+      },
+      args: [lat, lon],
+    });
+  } catch (_) {
+    // Best-effort; tab may not be ready yet
   }
 }
 
@@ -209,6 +241,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === 'disconnect') {
     disconnect();
+    sendResponse({ ok: true });
+    return true;
+  }
+  if (msg.type === 'setGeo') {
+    geoLat = msg.lat;
+    geoLon = msg.lon;
     sendResponse({ ok: true });
     return true;
   }

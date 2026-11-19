@@ -2,6 +2,7 @@
 let sourceState = {}, activeRun = false, viewerSocket = null, viewerSite = null;
 let products = [], selected = new Set(), currentRun = null, currentReport = null, aiConfigured = false, agentConnected = false;
 let runs = [], stats = null, expanded = new Set(), openRejected = new Set(), sites = new Set(['arzon', 'oson']);
+let locationFilter = 'all';
 let lastReportJson = '', lastStatsJson = '', tab = 'products', editingPrice = null;
 const SITE_NAMES = {arzon: 'ArzonApteka', oson: 'OsonApteka'};
 const $ = s => document.querySelector(s);
@@ -317,30 +318,54 @@ function renderReview() {
     </article>`).join('') : `<div class="card empty">${t('review.empty')}</div>`;
 }
 function offerLine(p, o) {
+  const locText = o.pharmacy_address || (o.location && o.location !== 'Узбекистан' && o.location !== 'Uzbekistan (site default)' ? o.location : '');
+  const locBadge = locText ? `<span class="location-badge">📍 ${esc(locText)}</span>` : '';
   return `<div class="offer ${o.match_status}">
     <div class="offer-main"><span class="site-tag ${o.site}">${siteName(o.site)}</span>
       <a href="${esc(safeUrl(o.url))}" target="_blank" rel="noopener">${esc(o.name)} ↗</a>
       ${priceBlock(o)} <span class="pill ${o.match_status === 'accepted' ? 'ok' : o.match_status === 'review' ? 'warn' : 'bad'}">${t('match.' + o.match_status)}</span>
-      ${diffInfo(p.invoice_price, o.price).html}</div>
+      ${diffInfo(p.invoice_price, o.price).html}${locBadge}</div>
     <p class="comment">${esc(o.comment)}</p>${decisionButtons(o)}</div>`;
 }
+function updateLocationFilter(entries) {
+  const sel = $('#location-filter');
+  if (!sel) return;
+  const locs = new Set();
+  for (const entry of entries) {
+    for (const o of entry.offers) {
+      const loc = o.pharmacy_address || o.location;
+      if (loc && loc !== 'Узбекистан' && loc !== 'Uzbekistan (site default)') locs.add(loc);
+    }
+  }
+  const prev = sel.value;
+  sel.innerHTML = `<option value="all">${t('filter.allLocations')}</option>` +
+    [...locs].sort().map(l => `<option value="${esc(l)}" ${prev === l ? 'selected' : ''}>${esc(l)}</option>`).join('');
+  sel.hidden = locs.size === 0;
+  locationFilter = sel.value;
+}
 function renderResults(entries) {
+  updateLocationFilter(entries);
   const filter = $('#report-filter').value || 'all';
   const shown = entries.filter(e => filter === 'all' || e.matching?.status === filter);
   $('#results-empty').hidden = shown.length > 0;
   $('#results-empty').textContent = entries.length ? t('results.noneMatch') : t('results.empty');
   $('#reports').innerHTML = shown.map(entry => {
     const {product: p, estimate: e, sources, offers} = entry;
-    const waiting = offers.some(o => o.match_status === 'review');
+    // Apply location filter to visible offers only
+    const locFiltered = locationFilter === 'all' ? offers : offers.filter(o => {
+      const loc = o.pharmacy_address || o.location;
+      return loc === locationFilter;
+    });
+    const waiting = locFiltered.some(o => o.match_status === 'review');
     const status = e.value != null ? ['ok', t('est.' + e.status)] : waiting ? ['warn', t('est.toReview')] : ['bad', t('est.unavailable')];
     const siteCell = site => e.per_site[site] != null ? money(e.per_site[site])
       : sources[site] ? `<span class="muted">${esc(sources[site].status === 'ok' ? '—' : stateLabel(sources[site].status))}</span>` : '—';
     const delta = e.invoice_delta_percent == null ? null : Math.round(e.invoice_delta_percent * 10) / 10;
     const open = expanded.has(p.id);
-    const rejected = offers.filter(o => o.match_status === 'rejected');
-    const visible = offers.filter(o => o.match_status !== 'rejected').sort((a, b) => (a.match_status === 'review' ? 0 : 1) - (b.match_status === 'review' ? 0 : 1));
+    const rejected = locFiltered.filter(o => o.match_status === 'rejected');
+    const visible = locFiltered.filter(o => o.match_status !== 'rejected').sort((a, b) => (a.match_status === 'review' ? 0 : 1) - (b.match_status === 'review' ? 0 : 1));
     return `<tr class="row ${open ? 'open' : ''}" data-expand="${p.id}">
-        <td><span class="caret">${open ? '▾' : '▸'}</span><strong>${esc(p.name)}</strong><small>${esc(p.manufacturer)} · ${t('results.listings', {n: offers.length})}</small></td>
+        <td><span class="caret">${open ? '▾' : '▸'}</span><strong>${esc(p.name)}</strong><small>${esc(p.manufacturer)} · ${t('results.listings', {n: locFiltered.length})}</small></td>
         <td class="num">${money(p.invoice_price)}</td><td class="num">${siteCell('arzon')}</td><td class="num">${siteCell('oson')}</td>
         <td class="num"><strong>${money(e.value)}</strong></td>
         <td class="num">${optimalCell(entry)}</td>
@@ -468,6 +493,7 @@ $('#all-products').onchange = e => { selected = e.target.checked ? new Set(produ
 $('#search').oninput = renderProducts;
 $('#to-collect').onclick = () => showTab('collect');
 $('#report-filter').onchange = () => currentReport && renderResults(currentReport.products);
+$('#location-filter').onchange = () => { locationFilter = $('#location-filter').value; currentReport && renderResults(currentReport.products); };
 $('#run-select').onchange = async e => { currentRun = Number(e.target.value) || null; expanded.clear(); try { await refreshRuns(); } catch (x) { toast(x.message); } };
 $('#upload-form').onsubmit = async e => {
   e.preventDefault();
