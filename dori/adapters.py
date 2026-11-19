@@ -273,10 +273,14 @@ async def agent_search_arzon(agent_bus, product, region_id=2114):
     if not search_offers:
         return [], {'status': 'no_results', 'url': search_url, 'pages': 1}
 
-    # Use the best-matching product URL (first result = most relevant)
-    product_url = search_offers[0]['url']
-    product_name = search_offers[0]['name']
-    log.info('agent arzon_pharmacies: got product_url=%s name=%r', product_url, product_name)
+    # Pick the best-matching offer: prefer one whose form/measures match our product
+    from .matching import match as _match
+    scored = sorted(search_offers, key=lambda o: _match(product, o)['score'], reverse=True)
+    # Among top scorers, prefer non-rejected ones
+    best = next((o for o in scored if _match(product, o)['status'] != 'rejected'), scored[0])
+    product_url = best['url']
+    product_name = best['name']
+    log.info('agent arzon_pharmacies: got product_url=%s name=%r score=%.2f', product_url, product_name, _match(product, best)['score'])
 
     # Now ask the extension to do the multi-step pharmacy fetch
     result = await agent_bus.fetch_arzon_pharmacies(product_url, region_id)

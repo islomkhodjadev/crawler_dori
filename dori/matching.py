@@ -30,8 +30,11 @@ def attributes(name):
     # Two passes handles one level of nesting: inner first, then outer.
     s = re.sub(r'\([^()]{2,60}\)', ' ', s)
     s = re.sub(r'\([^()]{2,60}\)', ' ', s)
-    # Collapse grouped numeric thousands such as "5 000МЕ" before unit extraction.
-    s = re.sub(r'(\d)\s+(?=\d{3}(?:\D|$))', r'\1', s)
+    # Normalize reversed percent notation: "%5" → "5%" so the unit extractor finds it.
+    s = re.sub(r'%\s*(\d+(?:\.\d+)?)\b', r'\1%', s)
+    # Collapse grouped numeric thousands such as "5 000МЕ" or "10 000мг" before unit extraction.
+    # Only collapse when the trailing group is exactly 3 digits followed by a non-digit (a unit or space).
+    s = re.sub(r'(\d)\s+(?=\d{3}(?:[^0-9]|$))', r'\1', s)
     count = re.search(r'(?:№|\b[nn]o?\.?\s*|#)\s*(\d+)(?:\s*[xх*]\s*(\d+))?', s)
     pack = int(count[1]) * int(count[2] or 1) if count else None
     if count:
@@ -79,12 +82,34 @@ def same_manufacturer(a, b):
     return ratio(a, b) / 100
 
 
+def _measures_compatible(a_measures, b_measures) -> bool:
+    """Return True if measures are compatible despite being unequal.
+
+    Competitor listings for liquids (syrups, solutions, injections) often include
+    both concentration (mg/ml) AND total volume (ml), while our DB entry has only
+    volume. Example: our "100 мл" vs competitor "15мг/5мл 100мл №1" → both have
+    ('ml', '100') so they describe the same product. We treat this as compatible
+    when every measure in the smaller set is present in the larger set.
+    """
+    if not a_measures or not b_measures:
+        return False
+    a_set, b_set = set(map(tuple, a_measures)), set(map(tuple, b_measures))
+    # Both must share at least one measure, and the smaller must be a subset
+    return bool(a_set & b_set) and (a_set <= b_set or b_set <= a_set)
+
+
 def match(product, offer):
     a, b = attributes(product['name']), attributes(offer['name'])
     reasons, conflicts, missing = [], [], []
     score = round(ratio(a['brand'], b['brand']) / 100, 3)
     for key in ('pack', 'measures', 'forms'):
-        if a[key] and b[key] and a[key] != b[key]:
+        if key == 'measures' and a[key] and b[key] and a[key] != b[key]:
+            if _measures_compatible(a[key], b[key]):
+                # Competitor has more detail (e.g. concentration+volume vs volume only)
+                missing.append('measures incomplete')
+            else:
+                conflicts.append('measures differs')
+        elif a[key] and b[key] and a[key] != b[key]:
             conflicts.append(f'{key} differs')
         elif a[key] and not b[key]:
             missing.append(f'{key} missing in result')
@@ -127,10 +152,22 @@ def match(product, offer):
 def search_term(product, site=None):
     if product.get('barcode'):
         return product['barcode']
-    # Include brand words until dosage/form so that variants can be compared locally.
+    # Include brand name + dosage form word so search engines return the right form.
     name = product['name']
-    parts = re.split(r'\b(?:таб|капс|спрей|крем|гель|капли|сироп|мазь|р-р|раствор)\b|\d', name, maxsplit=1, flags=re.I)
-    term = parts[0].strip(' ,.-') or name.split()[0]
+    # Strip leading rank-prefix digits like "1 ", "2 ", "7 " from internal product names.
+    name = re.sub(r'^\d+\s+', '', name).strip()
+    # Fix common internal spelling errors before searching.
+    name = re.sub(r'АСКВРБИНКА', 'АСКОРБИНКА', name, flags=re.I)
+    FORM_WORDS = r'таб|капс|спрей|крем|гель|капли|сироп|мазь|р-р|раствор|суспензия|суспен|свечи|свеч|порошок|пор|ампул|амп|флак'
+    # Find form word position, include it in term
+    m_form = re.search(r'\b(' + FORM_WORDS + r')\b', name, re.I)
+    if m_form:
+        # Include everything up to and including the form word
+        term = name[:m_form.end()].strip(' ,.-')
+    else:
+        # No form word — split at first standalone digit (not part of a letter+digit token like D3 or Д3)
+        parts = re.split(r'(?<![а-яёА-ЯЁa-zA-Z])\d', name, maxsplit=1)
+        term = parts[0].strip(' ,.-% ') or name.split()[0]
     if site == 'oson':
         # Oson's search engine maps short Latin-only tokens (e.g. "NOW") to Cyrillic near-matches.
         # Drop leading Latin-only words so the Cyrillic drug name drives the search.
