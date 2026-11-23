@@ -61,16 +61,18 @@ def build_import(stores: list[dict], stock_by_store: dict[int, list[dict]]) -> t
     Returns:
       products  — unique products (one row per product_id), ready for store.import_products()
       pharmacy_stock — flat list of {store_id, store_name, store_address, lat, lng,
-                                     dorixona_product_id, name, qty}
+                                     dorixona_product_id, name, qty, price}
                        used to populate the pharmacy_stock table
     """
     seen: dict[int, dict] = {}  # product_id -> product dict
+    prices_by_pid: dict[int, list[float]] = {}  # product_id -> list of per-pharmacy prices
     pharmacy_stock = []
 
     for store in stores:
         items = stock_by_store.get(store['id'], [])
         for item in items:
             pid = item['product_id']
+            price = item.get('price')
             if pid not in seen:
                 seen[pid] = {
                     'name': item['name'],
@@ -82,6 +84,8 @@ def build_import(stores: list[dict], stock_by_store: dict[int, list[dict]]) -> t
                     'sheet': '03Dorixona',
                     'dorixona_product_id': pid,
                 }
+            if price and float(price) > 0:
+                prices_by_pid.setdefault(pid, []).append(float(price))
             pharmacy_stock.append({
                 'store_id': store['id'],
                 'store_name': store['name'],
@@ -91,6 +95,14 @@ def build_import(stores: list[dict], stock_by_store: dict[int, list[dict]]) -> t
                 'dorixona_product_id': pid,
                 'name': item['name'],
                 'qty': item['qty'],
+                'price': float(price) if price and float(price) > 0 else None,
             })
+
+    # Set invoice_price on each product as the median of per-pharmacy prices
+    from statistics import median
+    for pid, product in seen.items():
+        prices = prices_by_pid.get(pid)
+        if prices:
+            product['invoice_price'] = round(median(prices), 2)
 
     return list(seen.values()), pharmacy_stock

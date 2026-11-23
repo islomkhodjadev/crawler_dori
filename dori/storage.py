@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS pharmacy_stock (
  dori_product_id INTEGER REFERENCES products(id),
  name TEXT NOT NULL,
  qty REAL NOT NULL,
+ price REAL,
  synced_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS pharmacy_stock_product ON pharmacy_stock(dori_product_id);
@@ -69,6 +70,10 @@ class Store:
             existing={row['name'] for row in db.execute('PRAGMA table_info(products)')}
             if 'dorixona_product_id' not in existing:
                 db.execute('ALTER TABLE products ADD COLUMN dorixona_product_id INTEGER')
+            # Migrate pharmacy_stock: add price column if missing
+            existing={row['name'] for row in db.execute('PRAGMA table_info(pharmacy_stock)')}
+            if 'price' not in existing:
+                db.execute('ALTER TABLE pharmacy_stock ADD COLUMN price REAL')
 
     @contextmanager
     def connect(self):
@@ -141,10 +146,10 @@ class Store:
                 dori_id = dpid_to_dori.get(dpid) or existing_map.get(dpid)
                 db.execute(
                     'INSERT INTO pharmacy_stock(store_id,store_name,store_address,lat,lng,'
-                    'dorixona_product_id,dori_product_id,name,qty,synced_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                    'dorixona_product_id,dori_product_id,name,qty,price,synced_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
                     (row['store_id'], row['store_name'], row['store_address'],
                      row.get('lat'), row.get('lng'), dpid, dori_id,
-                     row['name'], row['qty'], synced_at)
+                     row['name'], row['qty'], row.get('price'), synced_at)
                 )
         return ids
 
