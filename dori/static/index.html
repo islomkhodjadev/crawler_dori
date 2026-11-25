@@ -24,6 +24,7 @@
   <button data-tab="results"><b>5</b><span data-i18n="tab.results"></span><em id="badge-results"></em></button>
   <button data-tab="help"><b>?</b><span data-i18n="tab.help"></span></button>
   <button data-tab="agents"><b>⬡</b><span>Агенты</span><em id="badge-agents"></em></button>
+  <button data-tab="queue"><b>▶</b><span>Очередь</span><em id="badge-queue"></em></button>
 </nav>
 
 <div class="next-step" id="next-step"><span id="next-text"></span><button id="next-go" data-i18n="next.go"></button></div>
@@ -251,6 +252,41 @@
     </div>
   </section>
 
+  <!-- Queue / Distributed crawl queue -->
+  <section class="panel" data-panel="queue" hidden>
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <h2 style="margin:0">Очередь сбора цен</h2>
+        <span id="queue-status-badge" style="font-size:12px;padding:4px 10px;border-radius:12px;background:#e8f0ed;color:#1d6b55">Ожидание</span>
+      </div>
+      <p class="muted" style="margin-bottom:16px;font-size:13px">
+        Запустите сбор для <strong id="queue-product-count">всех</strong> продуктов.
+        Все подключённые агенты получат задачи автоматически.
+      </p>
+      <div style="display:flex;gap:8px;margin-bottom:16px">
+        <button id="queue-start" class="big" style="flex:1">▶ Запустить сбор</button>
+        <button id="queue-stop" class="danger" style="flex:0 0 auto" hidden>■ Остановить</button>
+      </div>
+      <div id="queue-progress-wrap" style="margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">
+          <span id="queue-progress-label">Готово: 0 / 0</span>
+          <span id="queue-progress-pct" style="color:var(--muted)">0%</span>
+        </div>
+        <progress id="queue-progress" value="0" max="100" style="width:100%;height:14px;border-radius:8px"></progress>
+      </div>
+      <div class="metrics" id="queue-metrics" style="margin-top:8px">
+        <div><span style="color:var(--muted);font-size:12px">Выполнено</span><strong id="q-done">0</strong></div>
+        <div><span style="color:var(--muted);font-size:12px">В работе</span><strong id="q-inprog">0</strong></div>
+        <div><span style="color:var(--muted);font-size:12px">Ожидают</span><strong id="q-pending">0</strong></div>
+        <div><span style="color:var(--muted);font-size:12px">Ошибки</span><strong id="q-failed">0</strong></div>
+      </div>
+    </div>
+    <div class="card" id="queue-agents-card">
+      <h3 style="margin:0 0 8px">Подключённые агенты</h3>
+      <span id="queue-agent-count" style="color:var(--muted);font-size:13px">Нет агентов</span>
+    </div>
+  </section>
+
   <!-- Agents / Distributed crawling -->
   <section class="panel" data-panel="agents" hidden>
     <div class="card">
@@ -297,6 +333,116 @@
 
 <script src="/static/i18n.js"></script>
 <script src="/static/app.js"></script>
+<script>
+// ---- Queue tab ----
+(function () {
+  let pollTimer = null;
+
+  const startBtn = document.getElementById('queue-start');
+  const stopBtn  = document.getElementById('queue-stop');
+  const badge    = document.getElementById('queue-status-badge');
+  const pBar     = document.getElementById('queue-progress');
+  const pLabel   = document.getElementById('queue-progress-label');
+  const pPct     = document.getElementById('queue-progress-pct');
+  const qDone    = document.getElementById('q-done');
+  const qInprog  = document.getElementById('q-inprog');
+  const qPending = document.getElementById('q-pending');
+  const qFailed  = document.getElementById('q-failed');
+  const qBadge   = document.getElementById('badge-queue');
+  const agentCnt = document.getElementById('queue-agent-count');
+
+  const BADGE_STYLES = {
+    idle:    'background:#e8f0ed;color:#1d6b55',
+    running: 'background:#fff3cd;color:#856404',
+    done:    'background:#d4edda;color:#155724',
+    stopped: 'background:#f8d7da;color:#721c24',
+  };
+  const BADGE_LABELS = {
+    idle: 'Ожидание', running: 'Выполняется',
+    done: 'Завершено', stopped: 'Остановлено',
+  };
+
+  function applyStatus(s) {
+    const st = BADGE_STYLES[s] || BADGE_STYLES.idle;
+    badge.setAttribute('style', 'font-size:12px;padding:4px 10px;border-radius:12px;' + st);
+    badge.textContent = BADGE_LABELS[s] || s;
+    startBtn.hidden  = (s === 'running');
+    stopBtn.hidden   = (s !== 'running');
+    qBadge.textContent = (s === 'running') ? '●' : '';
+  }
+
+  function renderStatus(d) {
+    applyStatus(d.status || 'idle');
+    const total = d.total || 0;
+    const done  = d.done  || 0;
+    pBar.max   = total || 1;
+    pBar.value = done;
+    pLabel.textContent = `Выполнено: ${done} / ${total}`;
+    pPct.textContent   = total ? Math.round(done / total * 100) + '%' : '0%';
+    qDone.textContent    = d.done        || 0;
+    qInprog.textContent  = d.in_progress || 0;
+    qPending.textContent = d.pending     || 0;
+    qFailed.textContent  = d.failed      || 0;
+  }
+
+  function pollStatus() {
+    fetch('/api/queue/status')
+      .then(r => r.json())
+      .then(renderStatus)
+      .catch(() => {});
+  }
+
+  function pollAgents() {
+    fetch('/api/agents')
+      .then(r => r.json())
+      .then(agents => {
+        agentCnt.textContent = agents.length
+          ? `${agents.length} агент(ов): ` + agents.map(a => a.name || a.id.slice(0,6)).join(', ')
+          : 'Нет подключённых агентов';
+      })
+      .catch(() => {});
+  }
+
+  startBtn && startBtn.addEventListener('click', () => {
+    startBtn.disabled = true;
+    fetch('/api/queue/start', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'})
+      .then(r => r.json())
+      .then(d => {
+        if (d.detail) { alert(d.detail); startBtn.disabled = false; return; }
+        applyStatus('running');
+        clearInterval(pollTimer);
+        pollTimer = setInterval(() => { pollStatus(); pollAgents(); }, 3000);
+        startBtn.disabled = false;
+      })
+      .catch(e => { alert('Ошибка: ' + e); startBtn.disabled = false; });
+  });
+
+  stopBtn && stopBtn.addEventListener('click', () => {
+    if (!confirm('Остановить сбор цен?')) return;
+    fetch('/api/queue/stop', {method: 'POST'})
+      .then(() => { clearInterval(pollTimer); pollStatus(); })
+      .catch(() => {});
+  });
+
+  document.addEventListener('tabchange', e => {
+    clearInterval(pollTimer);
+    if (e.detail === 'queue') {
+      pollStatus();
+      pollAgents();
+      pollTimer = setInterval(() => { pollStatus(); pollAgents(); }, 3000);
+    }
+  });
+
+  document.querySelectorAll('[data-tab="queue"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      clearInterval(pollTimer);
+      pollStatus();
+      pollAgents();
+      pollTimer = setInterval(() => { pollStatus(); pollAgents(); }, 3000);
+    });
+  });
+})();
+</script>
 <script>
 // ---- Agents tab ----
 (function () {

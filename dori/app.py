@@ -20,6 +20,7 @@ from .storage import Store
 from .browser_admin import BrowserAdmin, SITES
 from .auth import AdminAuth
 from .agent import AgentBus
+from .queue import CrawlQueue
 from .logs import get, setup as setup_logging
 
 log = get('http')
@@ -71,12 +72,15 @@ def create_app(db_path=None):
     tasks = set()
     run_tasks = {}
     browsers = BrowserAdmin()
-    auth = AdminAuth()
+    auth = AdminAuth(store.path)
     agent_bus = AgentBus()
+    crawl_queue = CrawlQueue(store.path)
 
     @asynccontextmanager
     async def lifespan(app):
         store.recover()
+        watchdog_task = asyncio.create_task(crawl_queue.watchdog())
+        tasks.add(watchdog_task)
         yield
         for task in tasks:
             task.cancel()
@@ -125,9 +129,10 @@ def create_app(db_path=None):
         import os
         return {'ok': True, 'ai_configured': bool(os.getenv('OPENAI_API_KEY')),
                 'ai_default_enabled': bool(os.getenv('OPENAI_API_KEY')),
-                'admin_password_set': bool(auth.password),
+                'admin_password_set': True,
                 'agent_connected': agent_bus.connected() > 0,
-                'agent_count': agent_bus.connected()}
+                'agent_count': agent_bus.connected(),
+                'queue_running': crawl_queue.is_running}
 
     @app.post('/api/import')
     async def upload(file: UploadFile = File(...)):
@@ -341,12 +346,66 @@ def create_app(db_path=None):
         if not origin_ok:
             await websocket.close(code=1008, reason='Cross-origin')
             return
-        if auth.password and not __import__('secrets').compare_digest(password.encode(), auth.password.encode()):
+        if not auth.check_ws_password(password):
             await websocket.close(code=1008, reason='Unauthorized')
             log.warning('agent ws rejected wrong password origin=%s', origin)
             return
         await websocket.accept()
         await agent_bus.attach(websocket, agent_id=agent_id, agent_name=agent_name)
+
+    # ------------------------------------------------------------------ queue --
+
+    class QueueStartRequest(BaseModel):
+        sites: list[str] = Field(default_factory=lambda: ['arzon', 'oson'])
+        product_ids: list[int] | None = None  # None = all products
+
+    @app.post('/api/queue/start')
+    async def queue_start(body: QueueStartRequest, request: Request):
+        if crawl_queue.is_running:
+            raise HTTPException(409, 'A queue crawl is already running')
+        if not set(body.sites) <= {'arzon', 'oson'}:
+            raise HTTPException(400, 'Supported sites: arzon, oson')
+        if not agent_bus.connected():
+            raise HTTPException(503, 'No Chrome extension agents connected')
+        if body.product_ids is not None:
+            if not body.product_ids:
+                raise HTTPException(400, 'No product IDs provided')
+            product_ids = list(set(body.product_ids))
+        else:
+            product_ids = store.products_all_ids()
+        if not product_ids:
+            raise HTTPException(404, 'No products found')
+        username = auth.current_user(request.cookies) or 'admin'
+        sites = tuple(dict.fromkeys(body.sites))
+        total = len(product_ids) * len(sites)
+        try:
+            run_id = store.create_run(total, sites=sites, force=True)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        store.update_run(run_id, status='running', phase='Queue crawl starting')
+        session_id = crawl_queue.create_session(run_id, username, total)
+        crawl_queue.enqueue(session_id, product_ids, sites)
+        agent_bus.start_queue_workers(crawl_queue, store, run_id)
+        return {'session_id': session_id, 'run_id': run_id, 'total': total,
+                'products': len(product_ids), 'sites': list(sites)}
+
+    @app.post('/api/queue/stop')
+    def queue_stop():
+        if not crawl_queue.is_running:
+            raise HTTPException(404, 'No active queue session')
+        status = crawl_queue.status()
+        run_id = status.get('run_id')
+        crawl_queue.stop_session()
+        agent_bus.stop_queue_workers()
+        if run_id:
+            from .adapters import now
+            store.update_run(run_id, status='interrupted', finished_at=now(),
+                             active_product_id=None, active_site=None, phase='Queue stopped by admin')
+        return {'ok': True}
+
+    @app.get('/api/queue/status')
+    def queue_status():
+        return crawl_queue.status()
 
     # ------------------------------------------------------------------ /agent --
 

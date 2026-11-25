@@ -11,6 +11,27 @@ PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS products (
  id INTEGER PRIMARY KEY, batch TEXT NOT NULL, data TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS admin_users (
+ id TEXT PRIMARY KEY, username TEXT UNIQUE NOT NULL,
+ password_hash TEXT NOT NULL, created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS admin_sessions (
+ token TEXT PRIMARY KEY, user_id TEXT NOT NULL,
+ username TEXT NOT NULL, expires_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS crawl_sessions (
+ id TEXT PRIMARY KEY, run_id INTEGER NOT NULL, started_by TEXT NOT NULL,
+ started_at REAL NOT NULL, finished_at REAL,
+ total INTEGER NOT NULL DEFAULT 0, done INTEGER NOT NULL DEFAULT 0,
+ failed INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'running'
+);
+CREATE TABLE IF NOT EXISTS crawl_queue (
+ id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
+ product_id INTEGER NOT NULL, site TEXT NOT NULL DEFAULT 'oson',
+ status TEXT NOT NULL DEFAULT 'pending',
+ agent_id TEXT, started_at REAL, finished_at REAL,
+ retries INTEGER NOT NULL DEFAULT 0, error TEXT
+);
 CREATE TABLE IF NOT EXISTS runs (
  id INTEGER PRIMARY KEY, started_at TEXT NOT NULL, finished_at TEXT,
  status TEXT NOT NULL, total INTEGER NOT NULL, completed INTEGER NOT NULL DEFAULT 0,
@@ -248,14 +269,16 @@ class Store:
                 return 0
             return 0
 
-    def create_run(self, products, sites=None):
+    def create_run(self, products, sites=None, force=False):
+        total = products if isinstance(products, int) else len(products)
         with self.connect() as db:
-            # Transaction prevents two requests from starting overlapping jobs.
-            db.execute('BEGIN IMMEDIATE')
-            if db.execute("SELECT 1 FROM runs WHERE status IN ('queued','running','waiting_for_human')").fetchone():
-                raise ValueError('A crawl is already queued or running')
+            if not force:
+                # Transaction prevents two requests from starting overlapping jobs.
+                db.execute('BEGIN IMMEDIATE')
+                if db.execute("SELECT 1 FROM runs WHERE status IN ('queued','running','waiting_for_human')").fetchone():
+                    raise ValueError('A crawl is already queued or running')
             cursor = db.execute('INSERT INTO runs(started_at,status,total,last_activity,phase,sites) VALUES (?,?,?,?,?,?)',
-                                (now(), 'queued', len(products), now(), 'Queued', json.dumps(list(sites or []))))
+                                (now(), 'queued', total, now(), 'Queued', json.dumps(list(sites or []))))
             return cursor.lastrowid
 
     def update_run(self, run_id, **changes):

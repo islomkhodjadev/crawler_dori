@@ -41,6 +41,10 @@ class AgentBus:
         self._agents: dict = {}                # ws -> AgentInfo
         self._pending: dict[str, tuple] = {}   # task_id -> (Future, ws)
         self._rr_index: int = 0
+        self._queue = None                     # CrawlQueue when session active
+        self._store = None                     # Store reference for queue workers
+        self._run_id: Optional[int] = None     # Active queue run id
+        self._worker_tasks: dict = {}          # agent_id -> asyncio.Task
 
     def connected(self) -> int:
         return len(self._agents)
@@ -67,6 +71,27 @@ class AgentBus:
         self._rr_index += 1
         return ws
 
+    def start_queue_workers(self, queue, store, run_id: int) -> None:
+        """Start a worker for every currently connected agent when a queue session begins."""
+        from .queue import queue_worker
+        self._queue = queue
+        self._store = store
+        self._run_id = run_id
+        for ws, info in list(self._agents.items()):
+            if info.id not in self._worker_tasks:
+                pinned = PinnedAgentBus(self, ws)
+                task = asyncio.create_task(
+                    queue_worker(pinned, info.id, queue, store, run_id)
+                )
+                self._worker_tasks[info.id] = task
+                log.info('queue worker started (existing agent) id=%s run=%s', info.id, run_id)
+
+    def stop_queue_workers(self) -> None:
+        """Clear queue refs so new workers are not started; running workers exit naturally."""
+        self._queue = None
+        self._store = None
+        self._run_id = None
+
     async def attach(self, ws, agent_id: str = '', agent_name: str = '') -> None:
         info = AgentInfo(
             id=agent_id or str(uuid.uuid4()),
@@ -74,6 +99,18 @@ class AgentBus:
         )
         self._agents[ws] = info
         log.info('agent connected id=%s name=%r total=%d', info.id, info.name, len(self._agents))
+
+        # If a queue session is active, start a worker for this new agent
+        worker_task: Optional[asyncio.Task] = None
+        if self._queue and self._queue.is_running and self._store and self._run_id:
+            from .queue import queue_worker
+            pinned = PinnedAgentBus(self, ws)
+            worker_task = asyncio.create_task(
+                queue_worker(pinned, info.id, self._queue, self._store, self._run_id)
+            )
+            self._worker_tasks[info.id] = worker_task
+            log.info('queue worker started (new agent) id=%s run=%s', info.id, self._run_id)
+
         try:
             async for message in ws.iter_json():
                 if not isinstance(message, dict):
@@ -90,9 +127,12 @@ class AgentBus:
         except Exception as exc:
             log.info('agent disconnected id=%s: %s', info.id, type(exc).__name__)
         finally:
+            # Cancel this agent's queue worker
+            task = self._worker_tasks.pop(info.id, None)
+            if task and not task.done():
+                task.cancel()
             self._agents.pop(ws, None)
-            # Cancel any pending futures that were dispatched to this specific ws
-            # so the crawl loop fails fast instead of waiting for the full timeout.
+            # Cancel pending futures dispatched to this ws so callers fail fast
             stale = [tid for tid, (fut, w) in list(self._pending.items()) if w is ws]
             for tid in stale:
                 entry = self._pending.pop(tid, None)
