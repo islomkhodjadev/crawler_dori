@@ -15,7 +15,17 @@ FORMS = {'tablet': r'\b(?:таб(?:летки|летка)?|tab(?:lets?)?)\b',
          'solution': r'\b(?:раствор|р-р|solution)\b', 'ointment': r'\b(?:мазь|ointment)\b',
          'syrup': r'\b(?:сироп|syrup)\b', 'dragee': r'\b(?:драже|dragee)\b',
          # Gummies and chewables are separate products from ordinary capsules/tablets.
-         'chewable': r'\b(?:мармелад\w*|жев(?:ат\w*)?|gumm(?:y|ies)|chewables?)\b'}
+         'chewable': r'\b(?:мармелад\w*|жев(?:ат\w*)?|gumm(?:y|ies)|chewables?)\b',
+         # Cosmetic/hygiene delivery forms — distinct from pharma sprays, creams, etc.
+         'shower': r'\b(?:душ|dusch|shower)\b',
+         'lotion': r'\b(?:лосьон|lotion)\b',
+         'shampoo': r'\b(?:шампунь|shampoo)\b',
+         'foam': r'\b(?:пена|foam)\b',
+         'patch': r'\b(?:пласт(?:ырь)?|patch)\b',
+         'suppository': r'\b(?:свеч(?:и|а)|supp(?:ositories?)?)\b',
+         'powder': r'\b(?:порош(?:ок)?|powder)\b',
+         'suspension': r'\b(?:сусп(?:ензия)?|suspension)\b',
+         'injection': r'\b(?:ампул\w*|инъекц\w*|injection|ampoule?s?)\b'}
 
 
 def norm(s):
@@ -98,10 +108,27 @@ def _measures_compatible(a_measures, b_measures) -> bool:
     return bool(a_set & b_set) and (a_set <= b_set or b_set <= a_set)
 
 
+_VARIANT_RE = re.compile(
+    r'\b(?:плюс|plus|макс|max|extra|ультра|ultra|нео|neo|актив|activ(?:e)?|про|pro)\b',
+    re.I | re.U,
+)
+
+
+def _variant_modifiers(name: str) -> frozenset:
+    """Extract brand-variant words from raw name (before transliteration) that distinguish product lines."""
+    s = unicodedata.normalize('NFKC', name).casefold().replace('ё', 'е')
+    return frozenset(m for m in _VARIANT_RE.findall(s))
+
+
 def match(product, offer):
     a, b = attributes(product['name']), attributes(offer['name'])
     reasons, conflicts, missing = [], [], []
     score = round(ratio(a['brand'], b['brand']) / 100, 3)
+    # Variant modifiers like "плюс/plus" mark distinct product lines — if one side has
+    # them and the other doesn't, it's a different product regardless of name similarity.
+    va, vb = _variant_modifiers(product['name']), _variant_modifiers(offer['name'])
+    if va != vb:
+        conflicts.append('variant modifier differs')
     for key in ('pack', 'measures', 'forms'):
         if key == 'measures' and a[key] and b[key] and a[key] != b[key]:
             if _measures_compatible(a[key], b[key]):
@@ -211,7 +238,10 @@ def summarize_matches(offers, sources):
 
 FORM_NAMES = {'tablet': 'таблетки', 'capsule': 'капсулы', 'drops': 'капли', 'spray': 'спрей', 'cream': 'крем',
               'gel': 'гель', 'solution': 'раствор', 'ointment': 'мазь', 'syrup': 'сироп', 'dragee': 'драже',
-              'chewable': 'жевательная форма (мармелад)'}
+              'chewable': 'жевательная форма (мармелад)', 'shower': 'средство для душа',
+              'lotion': 'лосьон', 'shampoo': 'шампунь', 'foam': 'пена', 'patch': 'пластырь',
+              'suppository': 'свечи', 'powder': 'порошок', 'suspension': 'суспензия',
+              'injection': 'инъекция/ампулы'}
 UNIT_NAMES = {'mg': 'мг', 'iu': 'МЕ', 'ml': 'мл', '%': '%'}
 
 
@@ -235,7 +265,17 @@ def explain(product, offer, status, reasons, score, reviewed=False, current_stat
     theirs = (offer.get('manufacturer') or '').strip()
     notes = []
     for reason in reasons:
-        if reason == 'forms differs':
+        if reason == 'variant modifier differs':
+            va2, vb2 = _variant_modifiers(product['name']), _variant_modifiers(offer['name'])
+            only_ours = ', '.join(sorted(va2 - vb2))
+            only_theirs = ', '.join(sorted(vb2 - va2))
+            if only_ours and only_theirs:
+                notes.append(f'Вариант препарата не совпадает: у вас — «{only_ours}», на сайте — «{only_theirs}».')
+            elif only_ours:
+                notes.append(f'У вас указан вариант «{only_ours}», на сайте такого обозначения нет — возможно, другой препарат.')
+            else:
+                notes.append(f'На сайте указан вариант «{only_theirs}», у вас такого обозначения нет — возможно, другой препарат.')
+        elif reason == 'forms differs':
             notes.append(f'Форма не совпадает: у вас — {_forms(a["forms"])}, на сайте — {_forms(b["forms"])}.')
         elif reason == 'measures differs':
             notes.append(f'Дозировка не совпадает: у вас — {_measures(a["measures"])}, на сайте — {_measures(b["measures"])}.')
