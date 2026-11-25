@@ -266,6 +266,11 @@ def create_app(db_path=None):
         """How many Chrome extensions are currently connected."""
         return {'connected': agent_bus.connected()}
 
+    @app.get('/api/agents')
+    def agents_list():
+        """List all currently connected Chrome extension agents."""
+        return agent_bus.agent_list()
+
     @app.post('/api/agent/check')
     async def agent_check(body: ConnectionRequest):
         """Send a real Oson search through the connected agent and verify it returns prices."""
@@ -323,7 +328,8 @@ def create_app(db_path=None):
                         headers={'Content-Disposition': 'attachment; filename="dori-agent.zip"'})
 
     @app.websocket('/api/agent/ws')
-    async def agent_ws(websocket: WebSocket, password: str = ''):
+    async def agent_ws(websocket: WebSocket, password: str = '',
+                       agent_id: str = '', agent_name: str = ''):
         """Chrome extension connects here. Auth via ?password= query param."""
         from urllib.parse import urlparse
         origin = websocket.headers.get('origin', '')
@@ -340,7 +346,7 @@ def create_app(db_path=None):
             log.warning('agent ws rejected wrong password origin=%s', origin)
             return
         await websocket.accept()
-        await agent_bus.attach(websocket)
+        await agent_bus.attach(websocket, agent_id=agent_id, agent_name=agent_name)
 
     # ------------------------------------------------------------------ /agent --
 

@@ -9,24 +9,27 @@ log = get('service')
 async def crawl(store, run_id, products, sites=('arzon', 'oson'), admin=None, use_ai=None, agent_bus=None):
     log.info('crawl run=%s start products=%d sites=%s ai=%s', run_id, len(products), list(sites), use_ai)
     store.update_run(run_id, status='running', sites=json.dumps(list(sites)), phase='Starting browsers')
-    async def collect(browser):
-        for i, product in enumerate(products):
+
+    async def collect(browser, chunk=None, bus=None):
+        effective_products = chunk if chunk is not None else products
+        effective_bus = bus if bus is not None else agent_bus
+        for i, product in enumerate(effective_products):
             for site in sites:
                 store.update_run(run_id, active_product_id=product['id'], active_site=site, phase='Searching and extracting prices')
                 while True:
                     try:
-                        if admin and site == 'oson' and agent_bus and agent_bus.connected():
+                        if admin and site == 'oson' and effective_bus and effective_bus.connected():
                             from .adapters import agent_search_oson
                             from .geocode import attach_nearest_branches
-                            offers, details = await agent_search_oson(agent_bus, product, use_ai=use_ai)
+                            offers, details = await agent_search_oson(effective_bus, product, use_ai=use_ai)
                             if offers:
                                 await attach_nearest_branches(offers, store.stores())
-                        elif admin and site == 'arzon' and agent_bus and agent_bus.connected():
+                        elif admin and site == 'arzon' and effective_bus and effective_bus.connected():
                             import os
                             from .adapters import agent_search_arzon
                             from .geocode import attach_nearest_branches
                             region_id = int(os.getenv('ARZON_REGION_ID', '2114'))
-                            offers, details = await agent_search_arzon(agent_bus, product, region_id=region_id)
+                            offers, details = await agent_search_arzon(effective_bus, product, region_id=region_id)
                             if offers:
                                 await attach_nearest_branches(offers, store.stores())
                         elif admin:
@@ -49,10 +52,26 @@ async def crawl(store, run_id, products, sites=('arzon', 'oson'), admin=None, us
                 log.info('result run=%s product_id=%s site=%s status=%s offers=%d', run_id, product['id'], site, details.get('status'), len(offers))
                 store.save_result(run_id, product['id'], site, details, offers)
             store.update_run(run_id, completed=i + 1, phase='Product completed')
+
     try:
         if admin:
             admin.collecting = True
-            await collect(None)
+            n_agents = agent_bus.connected() if agent_bus else 0
+            if n_agents > 1:
+                # Distribute products across all connected agents in parallel.
+                from .agent import PinnedAgentBus
+                agent_wss = list(agent_bus._agents.keys())
+                n = len(agent_wss)
+                chunks = [products[i::n] for i in range(n)]
+                pinned = [PinnedAgentBus(agent_bus, ws) for ws in agent_wss]
+                log.info('crawl run=%s distributing %d products across %d agents', run_id, len(products), n)
+                await asyncio.gather(*[
+                    collect(None, chunk=chunk, bus=bus)
+                    for chunk, bus in zip(chunks, pinned)
+                    if chunk  # skip empty chunks when agents > products
+                ])
+            else:
+                await collect(None)
         else:
             async with BrowserCrawler(agent_bus=agent_bus) as browser:
                 await collect(browser)

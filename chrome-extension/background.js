@@ -18,6 +18,8 @@ let ws = null;
 let reconnectTimer = null;
 let serverUrl = '';
 let password = '';
+let agentName = '';
+let agentId = '';
 let status = 'disconnected'; // 'disconnected' | 'connecting' | 'connected' | 'error'
 let lastError = '';
 let tasksHandled = 0;
@@ -26,18 +28,32 @@ let geoLon = null;
 
 // ------------------------------------------------------------------ storage --
 
+function generateUUID() {
+  return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
+    (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16));
+}
+
 async function loadConfig() {
-  const data = await chrome.storage.local.get(['serverUrl', 'password', 'geoLat', 'geoLon']);
+  const data = await chrome.storage.local.get(['serverUrl', 'password', 'agentName', 'agentId', 'geoLat', 'geoLon']);
   serverUrl = data.serverUrl || '';
   password = data.password || '';
+  agentName = data.agentName || '';
+  // Generate a stable agent_id once and persist it forever
+  if (data.agentId) {
+    agentId = data.agentId;
+  } else {
+    agentId = generateUUID();
+    await chrome.storage.local.set({ agentId });
+  }
   geoLat = data.geoLat ?? null;
   geoLon = data.geoLon ?? null;
 }
 
-async function saveConfig(url, pw) {
+async function saveConfig(url, pw, name) {
   serverUrl = url;
   password = pw;
-  await chrome.storage.local.set({ serverUrl: url, password: pw });
+  agentName = name || agentName;
+  await chrome.storage.local.set({ serverUrl: url, password: pw, agentName: agentName });
 }
 
 // ------------------------------------------------------------------ status broadcast --
@@ -64,7 +80,10 @@ function connect() {
 
   // Build wss:// URL — always use secure WebSocket (server has TLS)
   const base = serverUrl.replace(/\/+$/, '');
-  const wsUrl = base.replace(/^http/, 'ws') + '/api/agent/ws?password=' + encodeURIComponent(password);
+  const wsUrl = base.replace(/^http/, 'ws') + '/api/agent/ws'
+    + '?password=' + encodeURIComponent(password)
+    + '&agent_id=' + encodeURIComponent(agentId)
+    + '&agent_name=' + encodeURIComponent(agentName || 'Агент');
 
   setStatus('connecting');
   ws = new WebSocket(wsUrl);
@@ -403,7 +422,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   if (msg.type === 'connect') {
-    saveConfig(msg.serverUrl, msg.password).then(() => {
+    saveConfig(msg.serverUrl, msg.password, msg.agentName).then(() => {
       disconnect();
       connect();
       sendResponse({ ok: true });

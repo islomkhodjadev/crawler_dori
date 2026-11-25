@@ -23,6 +23,7 @@
   <button data-tab="review"><b>4</b><span data-i18n="tab.review"></span><em id="badge-review"></em></button>
   <button data-tab="results"><b>5</b><span data-i18n="tab.results"></span><em id="badge-results"></em></button>
   <button data-tab="help"><b>?</b><span data-i18n="tab.help"></span></button>
+  <button data-tab="agents"><b>⬡</b><span>Агенты</span><em id="badge-agents"></em></button>
 </nav>
 
 <div class="next-step" id="next-step"><span id="next-text"></span><button id="next-go" data-i18n="next.go"></button></div>
@@ -249,6 +250,37 @@
       </dl>
     </div>
   </section>
+
+  <!-- Agents / Distributed crawling -->
+  <section class="panel" data-panel="agents" hidden>
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <h2 style="margin:0">Подключённые агенты</h2>
+        <button id="agents-refresh" class="ghost" style="font-size:12px">⟳ Обновить</button>
+      </div>
+      <p class="muted" style="margin-bottom:16px;font-size:13px">
+        Каждый агент — Chrome-расширение на компьютере менеджера аптеки.
+        При сборе цен задачи распределяются между всеми подключёнными агентами параллельно.
+      </p>
+      <div id="agents-table-wrap">
+        <table id="agents-table" style="width:100%;border-collapse:collapse;font-size:13px">
+          <thead>
+            <tr style="text-align:left;border-bottom:2px solid var(--border)">
+              <th style="padding:8px 12px">Статус</th>
+              <th style="padding:8px 12px">Название аптеки</th>
+              <th style="padding:8px 12px">ID агента</th>
+              <th style="padding:8px 12px">Подключён</th>
+              <th style="padding:8px 12px">Запросов</th>
+              <th style="padding:8px 12px">Последний запрос</th>
+            </tr>
+          </thead>
+          <tbody id="agents-tbody">
+            <tr><td colspan="6" style="padding:24px;text-align:center;color:var(--muted)">Загрузка…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
 </main>
 
 <div id="toast" role="status" hidden></div>
@@ -265,5 +297,77 @@
 
 <script src="/static/i18n.js"></script>
 <script src="/static/app.js"></script>
+<script>
+// ---- Agents tab ----
+(function () {
+  const tbody = document.getElementById('agents-tbody');
+  const refreshBtn = document.getElementById('agents-refresh');
+  let pollTimer = null;
+
+  function fmt(ts) {
+    if (!ts) return '—';
+    const d = new Date(ts * 1000);
+    return d.toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+
+  function ago(ts) {
+    if (!ts) return '—';
+    const s = Math.round(Date.now() / 1000 - ts);
+    if (s < 60) return s + ' с назад';
+    if (s < 3600) return Math.round(s / 60) + ' мин назад';
+    return Math.round(s / 3600) + ' ч назад';
+  }
+
+  function render(agents) {
+    if (!agents.length) {
+      tbody.innerHTML = '<tr><td colspan="6" style="padding:24px;text-align:center;color:var(--muted)">Нет подключённых агентов.<br>Запустите расширение на компьютерах менеджеров.</td></tr>';
+      document.getElementById('badge-agents').textContent = '';
+      return;
+    }
+    document.getElementById('badge-agents').textContent = agents.length;
+    tbody.innerHTML = agents.map(a => {
+      const dot = a.online ? '<span style="color:#1d6b55;font-size:16px">●</span> Онлайн' : '<span style="color:#999">●</span> Офлайн';
+      const shortId = (a.id || '').slice(0, 8) + '…';
+      return `<tr style="border-bottom:1px solid var(--border)">
+        <td style="padding:8px 12px">${dot}</td>
+        <td style="padding:8px 12px"><strong>${a.name || '—'}</strong></td>
+        <td style="padding:8px 12px;color:var(--muted);font-family:monospace">${shortId}</td>
+        <td style="padding:8px 12px">${fmt(a.connected_at)}</td>
+        <td style="padding:8px 12px">${a.task_count}</td>
+        <td style="padding:8px 12px">${ago(a.last_task_at)}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  function load() {
+    fetch('/api/agents')
+      .then(r => r.json())
+      .then(render)
+      .catch(() => {
+        tbody.innerHTML = '<tr><td colspan="6" style="padding:24px;text-align:center;color:var(--muted)">Ошибка загрузки</td></tr>';
+      });
+  }
+
+  // Poll every 5 s only while the Agents tab is visible
+  document.addEventListener('tabchange', e => {
+    clearInterval(pollTimer);
+    if (e.detail === 'agents') {
+      load();
+      pollTimer = setInterval(load, 5000);
+    }
+  });
+
+  refreshBtn && refreshBtn.addEventListener('click', load);
+
+  // Also hook into the tab buttons directly in case tabchange event isn't fired
+  document.querySelectorAll('[data-tab="agents"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      clearInterval(pollTimer);
+      load();
+      pollTimer = setInterval(load, 5000);
+    });
+  });
+})();
+</script>
 </body>
 </html>

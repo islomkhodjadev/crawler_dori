@@ -11,32 +11,69 @@ Protocol (all JSON over WebSocket /api/agent/ws):
   extension → server: {"type": "ping"}   (keepalive, no id)
 
 The extension must present the admin password in the WebSocket query string:
-  wss://predictor.03dorixona.uz/api/agent/ws?password=<password>
+  wss://predictor.03dorixona.uz/api/agent/ws?password=<password>&agent_id=<uuid>&agent_name=<name>
 """
 import asyncio
+import time
 import uuid
+from dataclasses import dataclass, field
 from typing import Optional
 from .logs import get
 
 log = get('agent')
 
-# How long to wait for the extension to return a page (seconds)
 FETCH_TIMEOUT = int(30)
+
+
+@dataclass
+class AgentInfo:
+    id: str
+    name: str
+    connected_at: float = field(default_factory=time.time)
+    task_count: int = 0
+    last_task_at: Optional[float] = None
 
 
 class AgentBus:
     """In-process broker between the crawl loop and connected Chrome extensions."""
 
     def __init__(self):
-        self._websockets: list = []          # connected extension WebSockets
-        self._pending: dict[str, asyncio.Future] = {}
+        self._agents: dict = {}                # ws -> AgentInfo
+        self._pending: dict[str, tuple] = {}   # task_id -> (Future, ws)
+        self._rr_index: int = 0
 
     def connected(self) -> int:
-        return len(self._websockets)
+        return len(self._agents)
 
-    async def attach(self, ws) -> None:
-        self._websockets.append(ws)
-        log.info('agent connected total=%d', len(self._websockets))
+    def agent_list(self) -> list[dict]:
+        return [
+            {
+                'id': info.id,
+                'name': info.name,
+                'connected_at': info.connected_at,
+                'task_count': info.task_count,
+                'last_task_at': info.last_task_at,
+                'online': True,
+            }
+            for info in self._agents.values()
+        ]
+
+    def _next_ws(self):
+        """Round-robin across connected agents."""
+        if not self._agents:
+            return None
+        agents = list(self._agents)
+        ws = agents[self._rr_index % len(agents)]
+        self._rr_index += 1
+        return ws
+
+    async def attach(self, ws, agent_id: str = '', agent_name: str = '') -> None:
+        info = AgentInfo(
+            id=agent_id or str(uuid.uuid4()),
+            name=agent_name or 'Агент',
+        )
+        self._agents[ws] = info
+        log.info('agent connected id=%s name=%r total=%d', info.id, info.name, len(self._agents))
         try:
             async for message in ws.iter_json():
                 if not isinstance(message, dict):
@@ -45,27 +82,44 @@ class AgentBus:
                     continue
                 task_id = message.get('id')
                 if task_id and task_id in self._pending:
-                    fut = self._pending.pop(task_id)
+                    fut, _ = self._pending.pop(task_id)
                     if not fut.done():
                         fut.set_result(message)
                         log.info('agent task id=%s status=%s', task_id,
                                  message.get('status', message.get('error', '?')))
         except Exception as exc:
-            log.info('agent disconnected: %s', type(exc).__name__)
+            log.info('agent disconnected id=%s: %s', info.id, type(exc).__name__)
         finally:
-            self._websockets.remove(ws)
-            log.info('agent disconnected total=%d', len(self._websockets))
+            self._agents.pop(ws, None)
+            # Cancel any pending futures that were dispatched to this specific ws
+            # so the crawl loop fails fast instead of waiting for the full timeout.
+            stale = [tid for tid, (fut, w) in list(self._pending.items()) if w is ws]
+            for tid in stale:
+                entry = self._pending.pop(tid, None)
+                if entry:
+                    fut, _ = entry
+                    if not fut.done():
+                        fut.cancel()
+                        log.info('agent cancelled stale task id=%s (agent disconnected)', tid)
+            log.info('agent removed id=%s total=%d', info.id, len(self._agents))
 
-    async def _send_task(self, payload: dict, timeout: int = FETCH_TIMEOUT) -> Optional[dict]:
-        """Low-level: send a task to the extension and await its response."""
-        if not self._websockets:
+    async def _send_task(self, payload: dict, timeout: int = FETCH_TIMEOUT,
+                         ws=None) -> Optional[dict]:
+        """Low-level: send a task to an extension and await its response."""
+        if not self._agents:
             return None
-        ws = self._websockets[-1]
+        if ws is None:
+            ws = self._next_ws()
+        if ws not in self._agents:
+            return None
+        info = self._agents[ws]
         task_id = str(uuid.uuid4())
         payload = {**payload, 'id': task_id}
         loop = asyncio.get_event_loop()
         fut: asyncio.Future = loop.create_future()
-        self._pending[task_id] = fut
+        self._pending[task_id] = (fut, ws)
+        info.task_count += 1
+        info.last_task_at = time.time()
         try:
             await ws.send_json(payload)
             result = await asyncio.wait_for(fut, timeout=timeout)
@@ -77,28 +131,56 @@ class AgentBus:
             log.warning('agent task timeout id=%s type=%s', task_id, payload.get('type'))
             self._pending.pop(task_id, None)
             return None
+        except asyncio.CancelledError:
+            log.warning('agent task cancelled id=%s (agent disconnected)', task_id)
+            return None
         except Exception as exc:
             log.warning('agent task failed id=%s: %s: %s', task_id, type(exc).__name__, exc)
             self._pending.pop(task_id, None)
             return None
 
-    async def fetch(self, url: str, site: str) -> Optional[dict]:
+    async def fetch(self, url: str, site: str, ws=None) -> Optional[dict]:
         """Ask a connected extension to fetch url. Returns {html, url, status} or None."""
         log.info('agent fetch site=%s url=%.120s', site, url)
-        return await self._send_task({'type': 'fetch', 'url': url, 'site': site})
+        return await self._send_task({'type': 'fetch', 'url': url, 'site': site}, ws=ws)
 
-    async def fetch_arzon_pharmacies(self, product_url: str, region_id: int) -> Optional[dict]:
+    async def fetch_arzon_pharmacies(self, product_url: str, region_id: int,
+                                     ws=None) -> Optional[dict]:
         """Ask extension to: add product to cart, load pharmacy chooser, return HTML, clear cart."""
         log.info('agent arzon_pharmacies product_url=%.120s region_id=%s', product_url, region_id)
         return await self._send_task(
             {'type': 'arzon_pharmacies', 'product_url': product_url, 'region_id': region_id},
-            timeout=90,
+            timeout=90, ws=ws,
         )
 
-    async def fetch_oson_pharmacies(self, product_url: str, region_ids: list) -> Optional[dict]:
+    async def fetch_oson_pharmacies(self, product_url: str, region_ids: list,
+                                    ws=None) -> Optional[dict]:
         """Ask extension to: set Oson region, fetch product page, return SSR HTML with per-pharmacy prices."""
         log.info('agent oson_pharmacies product_url=%.120s region_ids=%s', product_url, region_ids)
         return await self._send_task(
             {'type': 'oson_pharmacies', 'product_url': product_url, 'region_ids': region_ids},
-            timeout=60,
+            timeout=60, ws=ws,
         )
+
+
+class PinnedAgentBus:
+    """Thin wrapper that routes all tasks to one specific connected ws.
+
+    Used by the parallel crawl loop so each product-chunk stays on one agent.
+    """
+
+    def __init__(self, bus: AgentBus, ws):
+        self._bus = bus
+        self._ws = ws
+
+    def connected(self) -> int:
+        return 1 if self._ws in self._bus._agents else 0
+
+    async def fetch(self, url: str, site: str) -> Optional[dict]:
+        return await self._bus.fetch(url, site, ws=self._ws)
+
+    async def fetch_arzon_pharmacies(self, product_url: str, region_id: int) -> Optional[dict]:
+        return await self._bus.fetch_arzon_pharmacies(product_url, region_id, ws=self._ws)
+
+    async def fetch_oson_pharmacies(self, product_url: str, region_ids: list) -> Optional[dict]:
+        return await self._bus.fetch_oson_pharmacies(product_url, region_ids, ws=self._ws)
