@@ -72,6 +72,61 @@ class AdminAuth:
         db.close()
         return row['username'] if row else None
 
+    def list_users(self) -> list:
+        db = self._connect()
+        rows = db.execute('SELECT id, username, created_at FROM admin_users ORDER BY created_at').fetchall()
+        db.close()
+        return [{'id': r['id'], 'username': r['username'], 'created_at': r['created_at']} for r in rows]
+
+    def create_user(self, username: str, password: str) -> dict:
+        username = username.strip()
+        if not username or not password:
+            raise ValueError('username and password are required')
+        db = self._connect()
+        existing = db.execute('SELECT 1 FROM admin_users WHERE username=?', (username,)).fetchone()
+        if existing:
+            db.close()
+            raise ValueError(f'User "{username}" already exists')
+        uid = str(uuid.uuid4())
+        db.execute(
+            'INSERT INTO admin_users (id, username, password_hash, created_at) VALUES (?,?,?,?)',
+            (uid, username, _hash(password), time.time())
+        )
+        db.commit()
+        db.close()
+        return {'id': uid, 'username': username}
+
+    def delete_user(self, user_id: str, requesting_username: str) -> None:
+        db = self._connect()
+        row = db.execute('SELECT username FROM admin_users WHERE id=?', (user_id,)).fetchone()
+        if not row:
+            db.close()
+            raise ValueError('User not found')
+        if row['username'] == requesting_username:
+            db.close()
+            raise ValueError('Cannot delete your own account')
+        count = db.execute('SELECT COUNT(*) FROM admin_users').fetchone()[0]
+        if count <= 1:
+            db.close()
+            raise ValueError('Cannot delete the last admin user')
+        db.execute('DELETE FROM admin_users WHERE id=?', (user_id,))
+        db.execute('DELETE FROM admin_sessions WHERE user_id=?', (user_id,))
+        db.commit()
+        db.close()
+
+    def set_password(self, user_id: str, new_password: str) -> None:
+        if not new_password:
+            raise ValueError('password is required')
+        db = self._connect()
+        row = db.execute('SELECT 1 FROM admin_users WHERE id=?', (user_id,)).fetchone()
+        if not row:
+            db.close()
+            raise ValueError('User not found')
+        db.execute('UPDATE admin_users SET password_hash=? WHERE id=?', (_hash(new_password), user_id))
+        db.execute('DELETE FROM admin_sessions WHERE user_id=?', (user_id,))
+        db.commit()
+        db.close()
+
     def check_ws_password(self, password: str) -> bool:
         """Validate a plain-text password from the agent WebSocket query param.
 

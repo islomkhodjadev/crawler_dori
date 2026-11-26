@@ -276,6 +276,44 @@ def create_app(db_path=None):
         """List all currently connected Chrome extension agents."""
         return agent_bus.agent_list()
 
+    # ------------------------------------------------------------------ admin user management --
+
+    @app.get('/api/admin/users')
+    def admin_list_users():
+        return {'users': auth.list_users()}
+
+    class CreateUserRequest(BaseModel):
+        username: str
+        password: str
+
+    @app.post('/api/admin/users')
+    def admin_create_user(body: CreateUserRequest):
+        try:
+            user = auth.create_user(body.username, body.password)
+            return user
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    class SetPasswordRequest(BaseModel):
+        password: str
+
+    @app.put('/api/admin/users/{user_id}/password')
+    async def admin_set_password(user_id: str, body: SetPasswordRequest, request: Request):
+        try:
+            auth.set_password(user_id, body.password)
+            return {'ok': True}
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @app.delete('/api/admin/users/{user_id}')
+    async def admin_delete_user(user_id: str, request: Request):
+        requesting = auth.current_user(request.cookies) or ''
+        try:
+            auth.delete_user(user_id, requesting)
+            return {'ok': True}
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
     @app.post('/api/agent/check')
     async def agent_check(body: ConnectionRequest):
         """Send a real Oson search through the connected agent and verify it returns prices."""
