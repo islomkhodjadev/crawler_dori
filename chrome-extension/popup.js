@@ -1,8 +1,9 @@
+const SERVER_URL = 'https://predictor.03dorixona.uz';
+
 const dot = document.getElementById('dot');
 const statusText = document.getElementById('status-text');
 const statusDetail = document.getElementById('status-detail');
 const tasksLabel = document.getElementById('tasks-label');
-const urlInput = document.getElementById('url');
 const pwInput = document.getElementById('pw');
 const agentNameInput = document.getElementById('agent-name');
 const btnConnect = document.getElementById('btn-connect');
@@ -30,8 +31,7 @@ function applyStatus({ status, error, tasksHandled, serverUrl }) {
 }
 
 // Load saved config and geolocation into fields
-chrome.storage.local.get(['serverUrl', 'agentName', 'geoLat', 'geoLon']).then(d => {
-  urlInput.value = d.serverUrl || 'https://predictor.03dorixona.uz';
+chrome.storage.local.get(['agentName', 'geoLat', 'geoLon']).then(d => {
   agentNameInput.value = d.agentName || '';
   if (d.geoLat != null) latInput.value = d.geoLat;
   if (d.geoLon != null) lonInput.value = d.geoLon;
@@ -51,13 +51,11 @@ chrome.runtime.onMessage.addListener(msg => {
 });
 
 btnConnect.addEventListener('click', () => {
-  const url = urlInput.value.trim();
   const pw = pwInput.value;
   const agentName = agentNameInput.value.trim();
-  if (!url) { statusDetail.textContent = 'Введите адрес сервера.'; return; }
-  if (!pw)  { statusDetail.textContent = 'Введите пароль.'; return; }
+  if (!pw) { statusDetail.textContent = 'Введите пароль.'; return; }
   if (agentName) chrome.storage.local.set({ agentName });
-  chrome.runtime.sendMessage({ type: 'connect', serverUrl: url, password: pw, agentName });
+  chrome.runtime.sendMessage({ type: 'connect', serverUrl: SERVER_URL, password: pw, agentName });
 });
 
 btnDisconnect.addEventListener('click', () => {

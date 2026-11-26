@@ -9,6 +9,7 @@
  * No passwords or tokens are ever sent to oson/arzon — only fetch tasks.
  */
 
+const SERVER_URL_DEFAULT = 'https://predictor.03dorixona.uz';
 const RECONNECT_DELAY_MS = 5000;
 const PAGE_LOAD_TIMEOUT_MS = 25000;
 const SETTLE_WAIT_MS = 2000;    // extra wait after load for JS-rendered content
@@ -35,7 +36,7 @@ function generateUUID() {
 
 async function loadConfig() {
   const data = await chrome.storage.local.get(['serverUrl', 'password', 'agentName', 'agentId', 'geoLat', 'geoLon']);
-  serverUrl = data.serverUrl || '';
+  serverUrl = data.serverUrl || SERVER_URL_DEFAULT;
   password = data.password || '';
   agentName = data.agentName || '';
   // Generate a stable agent_id once and persist it forever
@@ -69,8 +70,8 @@ function setStatus(s, error = '') {
 // ------------------------------------------------------------------ WebSocket --
 
 function connect() {
-  if (!serverUrl || !password) {
-    setStatus('disconnected', 'Server URL and password not configured.');
+  if (!password) {
+    setStatus('disconnected', 'Password not configured.');
     return;
   }
 
@@ -446,13 +447,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 // Manifest V3 service workers restart frequently; reconnect on each startup.
 loadConfig().then(() => {
-  if (serverUrl && password) connect();
+  if (password) connect();
 });
 
 // Alarms keep the service worker alive in MV3
 chrome.alarms.create('keepalive', { periodInMinutes: 0.4 });
 chrome.alarms.onAlarm.addListener(() => {
-  if (serverUrl && password && (!ws || ws.readyState === WebSocket.CLOSED)) {
+  if (password && (!ws || ws.readyState === WebSocket.CLOSED)) {
     connect();
   }
 });
