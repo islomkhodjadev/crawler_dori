@@ -1,6 +1,6 @@
 // Admin panel: a five-step workflow (products → connect → collect → review → results) in RU / UZ / EN.
 let sourceState = {}, activeRun = false, viewerSocket = null, viewerSite = null;
-let products = [], selected = new Set(), currentRun = null, currentReport = null, aiConfigured = false, agentConnected = false;
+let products = [], selected = new Set(), currentRun = null, currentReport = null, aiConfigured = false, agentConnected = false, agentCount = 0;
 let runs = [], stats = null, expanded = new Set(), openRejected = new Set(), sites = new Set(['arzon', 'oson']);
 let locationFilter = 'all';
 let pharmacyStock = {}; // dori_product_id -> [{store_name, store_address, lat, lng, qty}]
@@ -132,8 +132,9 @@ function renderNext() {
   const review = reviewItems().length, connected = ['arzon', 'oson'].filter(s => sourceState[s]?.status === 'connected').length;
   const live = runs.find(r => ['queued', 'running', 'waiting_for_human'].includes(r.status));
   $('#badge-products').textContent = products.length || '';
-  $('#badge-connect').textContent = `${connected}/2`;
-  $('#badge-connect').className = connected === 2 ? 'ok' : '';
+  // Show agent count when agents are connected; fall back to Playwright browser count
+  $('#badge-connect').textContent = agentCount > 0 ? agentCount : (connected ? `${connected}/2` : '');
+  $('#badge-connect').className = (agentCount > 0 || connected === 2) ? 'ok' : '';
   $('#badge-collect').textContent = live && stats ? `${stats.progress_percent}%` : '';
   $('#badge-review').textContent = review || '';
   $('#badge-review').className = review ? 'hot' : '';
@@ -764,6 +765,7 @@ $('#remote-control').onpaste = e => { e.preventDefault(); sendBrowser({type: 'te
     const h = await api('/api/health');
     aiConfigured = h.ai_configured;
     agentConnected = Boolean(h.agent_connected);
+    agentCount = h.agent_count || 0;
     $('#use-ai').disabled = !aiConfigured;
     $('#use-ai').checked = Boolean(h.ai_default_enabled);
     $('#logout').hidden = !h.admin_password_set;
@@ -774,6 +776,7 @@ $('#remote-control').onpaste = e => { e.preventDefault(); sendBrowser({type: 'te
     try {
       const h = await api('/api/health');
       agentConnected = Boolean(h.agent_connected);
+      agentCount = h.agent_count || 0;
       updateAgentUI();
     } catch {}
     try { await refreshBrowsers(); await refreshRuns(); } catch {};

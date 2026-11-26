@@ -408,20 +408,34 @@
     fetch('/api/queue/start', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'})
       .then(r => r.json())
       .then(d => {
-        if (d.detail) { alert(d.detail); startBtn.disabled = false; return; }
+        if (d.detail) {
+          if (typeof toast === 'function') toast(d.detail);
+          else startBtn.insertAdjacentHTML('afterend', `<span class="muted" style="font-size:12px;margin-left:8px">${d.detail}</span>`);
+          startBtn.disabled = false;
+          return;
+        }
         applyStatus('running');
         clearInterval(pollTimer);
         pollTimer = setInterval(() => { pollStatus(); pollAgents(); }, 3000);
         startBtn.disabled = false;
       })
-      .catch(e => { alert('Ошибка: ' + e); startBtn.disabled = false; });
+      .catch(e => {
+        if (typeof toast === 'function') toast('Ошибка: ' + e);
+        startBtn.disabled = false;
+      });
   });
 
   stopBtn && stopBtn.addEventListener('click', () => {
-    if (!confirm('Остановить сбор цен?')) return;
+    stopBtn.disabled = true;
     fetch('/api/queue/stop', {method: 'POST'})
-      .then(() => { clearInterval(pollTimer); pollStatus(); })
-      .catch(() => {});
+      .then(() => {
+        clearInterval(pollTimer);
+        pollStatus();
+        // Refresh the run dropdown and top banner immediately
+        if (typeof refreshRuns === 'function') refreshRuns().catch(() => {});
+      })
+      .catch(e => { if (typeof toast === 'function') toast('Ошибка при остановке: ' + e); })
+      .finally(() => { stopBtn.disabled = false; });
   });
 
   document.addEventListener('tabchange', e => {
