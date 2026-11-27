@@ -304,7 +304,7 @@
       </div>
       <p class="muted" style="margin-bottom:16px;font-size:13px">
         Каждый агент — Chrome-расширение на компьютере менеджера аптеки.
-        Для сбора по филиалам назначьте агенту филиал и укажите координаты, если его зона отличается от адреса филиала.
+        Выберите филиал, чтобы автоматически использовать его координаты из ФОМ.
       </p>
       <div id="agents-table-wrap">
         <table id="agents-table" style="width:100%;border-collapse:collapse;font-size:13px">
@@ -340,7 +340,7 @@
   <form id="browser-text-form"><input id="browser-text" autocomplete="off" data-i18n-ph="viewer.type"><button data-i18n="viewer.send"></button><button type="button" id="browser-enter" class="ghost">Enter ↵</button><button type="button" id="browser-tab" class="ghost">Tab</button><button type="button" id="browser-check" data-i18n="connect.check"></button></form>
 </dialog>
 
-<script src="/static/i18n.js?v=agent-setup-1"></script>
+<script src="/static/i18n.js?v=agent-setup-2"></script>
 <script src="/static/app.js?v=branch-area-1"></script>
 <script>
 // ---- Queue tab ----
@@ -495,6 +495,16 @@
     return Math.round(s / 3600) + ' ч назад';
   }
 
+  function locationText(branch, assignment) {
+    const hasLocation = point => point?.lat != null && point?.lng != null
+      && Number.isFinite(Number(point.lat)) && Number.isFinite(Number(point.lng))
+      && Math.abs(Number(point.lat)) <= 90 && Math.abs(Number(point.lng)) <= 180
+      && (Number(point.lat) !== 0 || Number(point.lng) !== 0);
+    if (hasLocation(assignment)) return t('area.savedLocation', assignment);
+    if (hasLocation(branch)) return t('area.syncedLocation', branch);
+    return branch ? t('area.noLocation') : t('area.unassigned');
+  }
+
   function render(agents) {
     if (!agents.length) {
       tbody.innerHTML = '<tr><td colspan="7" style="padding:24px;text-align:center;color:var(--muted)">Нет подключённых агентов.<br>Запустите расширение на компьютерах менеджеров.</td></tr>';
@@ -505,6 +515,7 @@
     tbody.innerHTML = agents.map(a => {
       const dot = a.online ? '<span style="color:#1d6b55;font-size:16px">●</span> Онлайн' : '<span style="color:#999">●</span> Офлайн';
       const shortId = (a.id || '').slice(0, 8) + '…';
+      const branch = allStores.find(item => item.store_id === a.assignment?.store_id);
       return `<tr style="border-bottom:1px solid var(--border)">
         <td style="padding:8px 12px">${dot}</td>
         <td style="padding:8px 12px"><strong>${esc(a.name || '—')}</strong></td>
@@ -517,9 +528,8 @@
             <option value="">${esc(t('area.unassigned'))}</option>
             ${allStores.map(s => `<option value="${s.store_id}" ${a.assignment?.store_id === s.store_id ? 'selected' : ''}>${esc(s.store_name)}</option>`).join('')}
           </select>
-          <input name="lat" type="number" step="any" min="-90" max="90" value="${esc(a.assignment?.lat)}" placeholder="Lat" aria-label="Latitude">
-          <input name="lng" type="number" step="any" min="-180" max="180" value="${esc(a.assignment?.lng)}" placeholder="Lon" aria-label="Longitude">
           <button type="submit" class="ghost small">${esc(t('price.save'))}</button>
+          <small class="muted" data-agent-location style="display:block">${esc(locationText(branch, a.assignment))}</small>
         </form></td>
       </tr>`;
     }).join('');
@@ -543,18 +553,25 @@
     }
   });
 
-  tbody.addEventListener('input', () => { dirty = true; });
+  tbody.addEventListener('change', event => {
+    if (!event.target.matches('[data-agent-assignment] select')) return;
+    dirty = true;
+    const branch = allStores.find(item => item.store_id === Number(event.target.value));
+    const form = event.target.form;
+    form.querySelector('[data-agent-location]').textContent = locationText(branch);
+    form.querySelector('button').disabled = Boolean(branch && locationText(branch) === t('area.noLocation'));
+  });
   tbody.addEventListener('submit', async event => {
     const form = event.target.closest('[data-agent-assignment]');
     if (!form) return;
     event.preventDefault();
     const data = new FormData(form);
-    const number = key => data.get(key) === '' ? null : Number(data.get(key));
+    const storeId = data.get('store_id');
     saving = true;
     try {
       await api('/api/agents/' + encodeURIComponent(form.dataset.agentAssignment) + '/assignment', {
         method: 'PUT', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({store_id: number('store_id'), lat: number('lat'), lng: number('lng')}),
+        body: JSON.stringify({store_id: storeId ? Number(storeId) : null}),
       });
       dirty = false;
       toast(t('area.saved'));
