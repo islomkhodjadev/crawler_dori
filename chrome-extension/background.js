@@ -46,11 +46,11 @@ async function loadConfig() {
   }
 }
 
-async function saveConfig(url, pw, name, storeId, lat, lng) {
+async function saveConfig(url, pw, name, storeId) {
   serverUrl = url;
   password = pw;
   agentName = name || agentName;
-  await chrome.storage.local.set({ serverUrl: url, password: pw, agentName, storeId, geoLat: lat, geoLon: lng });
+  await chrome.storage.local.set({ serverUrl: url, password: pw, agentName, storeId });
 }
 
 // ------------------------------------------------------------------ status broadcast --
@@ -399,7 +399,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (!pw) throw new Error('Введите пароль · Enter the agent password');
       const payload = {password: pw};
       if (msg.type === 'connect') {
-        Object.assign(payload, {agent_id: agentId, store_id: msg.storeId, lat: msg.lat, lng: msg.lng});
+        Object.assign(payload, {agent_id: agentId, store_id: msg.storeId});
       }
       const response = await fetch(SERVER_URL_DEFAULT + '/api/agent/setup', {
         method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload),
@@ -407,7 +407,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const result = await response.json();
       if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : 'Agent setup failed');
       if (msg.type === 'connect') {
-        await saveConfig(SERVER_URL_DEFAULT, pw, msg.agentName, msg.storeId, msg.lat, msg.lng);
+        await saveConfig(SERVER_URL_DEFAULT, pw, msg.agentName, msg.storeId);
         disconnect();
         connect();
       }

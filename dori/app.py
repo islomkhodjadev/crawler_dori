@@ -349,9 +349,15 @@ def create_app(db_path=None):
         if body.agent_id is not None:
             if body.store_id is None:
                 raise HTTPException(400, 'Choose a pharmacy branch')
+            if body.lat is None and body.lng is None:
+                branch = next((item for item in branches if item['store_id'] == body.store_id), None)
+                if branch and not coordinates(branch['lat'], branch['lng']):
+                    raise HTTPException(400, 'У филиала нет координат в ФОМ. Обновите данные филиала и выполните синхронизацию.')
             assign_agent_branch(str(body.agent_id), body, branches)
         return {'items': [{'store_id': branch['store_id'], 'store_name': branch['store_name'],
-                           'store_address': branch['store_address']} for branch in branches]}
+                           'store_address': branch['store_address'],
+                           'location_available': coordinates(branch['lat'], branch['lng']) is not None}
+                          for branch in branches]}
 
     # ------------------------------------------------------------------ admin user management --
 

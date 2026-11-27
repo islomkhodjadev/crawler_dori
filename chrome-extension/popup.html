@@ -110,6 +110,7 @@
     <select id="branch" disabled>
       <option value="">Выберите филиал · Select a branch</option>
     </select>
+    <div class="hint">Координаты берутся из выбранного филиала.<br>Location comes from the selected branch.</div>
   </div>
   <div>
     <label for="agent-name">Имя агента · Agent name</label>
@@ -120,20 +121,6 @@
     <button class="primary" id="btn-connect" disabled>Подключить</button>
     <button id="btn-disconnect">Отключить</button>
   </div>
-</div>
-
-<div class="card">
-  <div style="font-size:12px;font-weight:600;color:var(--muted)">📍 Геолокация · Location <span style="font-weight:400">(опционально)</span></div>
-  <div class="row">
-    <input id="lat" type="number" step="any" min="-90" max="90" placeholder="Широта · Lat (41.29…)" style="flex:1">
-    <input id="lon" type="number" step="any" min="-180" max="180" placeholder="Долгота · Lon (69.24…)" style="flex:1">
-  </div>
-  <div class="row">
-    <button id="btn-detect-geo" style="flex:1">Определить · Detect</button>
-    <button id="btn-clear-geo" style="flex:1">Сбросить · Clear</button>
-  </div>
-  <div id="geo-status" style="font-size:11px;color:var(--muted)"></div>
-  <div class="hint" style="margin-top:0">Координаты задают центр поиска в Predictor. Если поля пустые, используются координаты филиала.<br>Leave blank to use the branch location.</div>
 </div>
 
 <div class="hint">

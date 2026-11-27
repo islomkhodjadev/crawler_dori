@@ -139,7 +139,7 @@ def test_extension_loads_branch_choices_and_saves_setup_without_admin_session(tm
         assert client.post(path, json=auth, headers={'Origin': 'https://unrelated.example'}).status_code == 403
         response = client.post(path, json=auth, headers=extension)
         assert response.json() == {'items': [
-            {'store_id': 7, 'store_name': 'Branch Seven', 'store_address': 'Example street'},
+            {'store_id': 7, 'store_name': 'Branch Seven', 'store_address': 'Example street', 'location_available': True},
         ]}
         assert client.post(path, json={**auth, 'agent_id': agent_id, 'store_id': 999},
                            headers=extension).status_code == 404
