@@ -1,6 +1,8 @@
 // Interface text in three languages. Match comments from the server stay in Russian.
 const I18N = {
   ru: {
+    'agentMap.shared': "Геопозиция устройства получена",
+    'agentMap.accuracy': "Точность ±{m} м",
     'agentMap.notShared': 'Геопозиция устройства не передана',
     'agentMap.open': "Открыть карту",
     'agentMap.title': "Карта филиалов и агентов",
@@ -151,6 +153,8 @@ const I18N = {
     'help.faq5q': 'Как добавить штрихкод для точного поиска', 'help.faq5a': 'Добавьте колонку «Штрихкод» (или barcode) в исходный Excel. При наличии штрихкода система использует его вместо названия — поиск становится точнее.',
   },
   uz: {
+    'agentMap.shared': "Qurilma joylashuvi qabul qilindi",
+    'agentMap.accuracy': "Aniqlik ±{m} m",
     'agentMap.notShared': 'Qurilma joylashuvi ulashilmagan',
     'agentMap.open': "Xaritani ochish",
     'agentMap.title': "Filiallar va agentlar xaritasi",
@@ -301,6 +305,8 @@ const I18N = {
     'help.faq5q': "Aniq qidiruv uchun shtrix-kod qanday qo'shiladi", 'help.faq5a': "Manba Excel fayliga «Shtrix-kod» (yoki barcode) ustunini qo'shing. Shtrix-kod bo'lsa tizim nomning o'rniga uni ishlatadi.",
   },
   en: {
+    'agentMap.shared': "Device location received",
+    'agentMap.accuracy': "Accuracy ±{m} m",
     'agentMap.notShared': 'Device location not shared',
     'agentMap.open': "Open map",
     'agentMap.title': "Branches and agents map",

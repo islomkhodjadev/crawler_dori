@@ -24,6 +24,7 @@ let agentId = '';
 let status = 'disconnected'; // 'disconnected' | 'connecting' | 'connected' | 'error'
 let lastError = '';
 let tasksHandled = 0;
+let locationRequest = null;
 
 // ------------------------------------------------------------------ storage --
 
@@ -80,7 +81,8 @@ function connect() {
   const wsUrl = base.replace(/^http/, 'ws') + '/api/agent/ws'
     + '?password=' + encodeURIComponent(password)
     + '&agent_id=' + encodeURIComponent(agentId)
-    + '&agent_name=' + encodeURIComponent(agentName || 'Агент');
+    + '&agent_name=' + encodeURIComponent(agentName || 'Агент')
+    + '&version=' + encodeURIComponent(chrome.runtime.getManifest().version);
 
   setStatus('connecting');
   const socket = new WebSocket(wsUrl);
@@ -96,7 +98,11 @@ function connect() {
   ws.onmessage = async (event) => {
     let msg;
     try { msg = JSON.parse(event.data); } catch { return; }
-    if (!msg || typeof msg !== 'object') return;
+    if (ws !== socket || !msg || typeof msg !== 'object') return;
+    if (msg.type === 'device_location_ack' && locationRequest?.id === msg.request_id) {
+      locationRequest.finish(Boolean(msg.ok));
+      return;
+    }
     if (msg.type === 'ping') { ws.send(JSON.stringify({ type: 'ping' })); return; }
     if (msg.type === 'fetch' && msg.id && msg.url) {
       await handleFetch(msg);
@@ -116,6 +122,7 @@ function connect() {
 
   ws.onclose = (event) => {
     if (ws !== socket) return;
+    locationRequest?.finish(false);
     ws = null;
     if (status !== 'disconnected') {
       setStatus('error', `Disconnected (${event.code}). Reconnecting…`);
@@ -136,6 +143,7 @@ function keepAlive() {
 }
 
 function disconnect() {
+  locationRequest?.finish(false);
   clearTimeout(reconnectTimer);
   if (ws) { ws.close(1000, 'User disconnected'); ws = null; }
   setStatus('disconnected');
@@ -416,13 +424,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   if (msg.type === 'shareLocation') {
-    if (ws?.readyState !== WebSocket.OPEN) {
+    if (ws?.readyState !== WebSocket.OPEN || locationRequest) {
       sendResponse({ok: false});
       return;
     }
-    ws.send(JSON.stringify({type: 'device_location', lat: msg.lat, lng: msg.lng}));
-    sendResponse({ok: true});
-    return;
+    const id = crypto.randomUUID();
+    const timeout = setTimeout(() => locationRequest?.finish(false), 6000);
+    locationRequest = {
+      id,
+      finish(ok) {
+        clearTimeout(timeout);
+        locationRequest = null;
+        sendResponse({ok});
+      },
+    };
+    try {
+      ws.send(JSON.stringify({type: 'device_location', request_id: id, lat: msg.lat, lng: msg.lng, accuracy: msg.accuracy}));
+    } catch (_) {
+      locationRequest.finish(false);
+    }
+    return true;
   }
   if (msg.type === 'disconnect') {
     disconnect();

@@ -125,11 +125,14 @@ shareLocation.addEventListener('click', async () => {
       navigator.geolocation.getCurrentPosition(resolve, reject, {maximumAge: 0, timeout: 12000}));
     const reply = await chrome.runtime.sendMessage({
       type: 'shareLocation', lat: position.coords.latitude, lng: position.coords.longitude,
+      accuracy: position.coords.accuracy,
     });
-    if (!reply?.ok) throw new Error('Подключите агент снова · Reconnect the agent');
-    locationMessage.textContent = 'Местоположение отправлено · Location sent';
+    if (!reply?.ok) throw new Error('Сервер не подтвердил геопозицию. Подключитесь повторно. · Server did not confirm. Reconnect and try again.');
+    locationMessage.textContent = `Геопозиция получена сервером · Server confirmed (±${Math.round(position.coords.accuracy)} m)`;
   } catch (error) {
-    locationMessage.textContent = error.message || 'Местоположение недоступно · Location unavailable';
+    locationMessage.textContent = error.code === 1
+      ? 'Разрешите Chrome доступ к геопозиции в настройках системы · Allow Chrome location access in system settings'
+      : (error.message || 'Местоположение недоступно · Location unavailable');
   } finally {
     sharing = false;
     shareLocation.disabled = !connected;

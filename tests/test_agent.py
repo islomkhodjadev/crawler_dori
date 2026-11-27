@@ -168,6 +168,10 @@ async def test_agent_device_location_belongs_to_the_online_session():
 
     class FakeWS:
         messages = asyncio.Queue()
+        replies = asyncio.Queue()
+
+        async def send_json(self, message):
+            await self.replies.put(message)
 
         async def iter_json(self):
             while True:
@@ -181,10 +185,13 @@ async def test_agent_device_location_belongs_to_the_online_session():
         await ws.messages.put({'type': 'device_location', 'lat': 400, 'lng': 69.25})
         await asyncio.sleep(0)
         assert bus.agent_list()[0]['device_location'] is None
-        await ws.messages.put({'type': 'device_location', 'lat': 41.4, 'lng': 69.25})
-        await asyncio.sleep(0)
+        await ws.messages.put({'type': 'device_location', 'lat': 41.4, 'lng': 69.25,
+                               'accuracy': 25, 'request_id': 'test-request'})
+        assert await asyncio.wait_for(ws.replies.get(), timeout=2) == {
+            'type': 'device_location_ack', 'request_id': 'test-request', 'ok': True,
+        }
         point = bus.agent_list()[0]['device_location']
-        assert (point['lat'], point['lng']) == (41.4, 69.25)
+        assert (point['lat'], point['lng'], point['accuracy']) == (41.4, 69.25, 25)
     finally:
         connected.cancel()
         await asyncio.gather(connected, return_exceptions=True)

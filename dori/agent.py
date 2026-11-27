@@ -14,6 +14,7 @@ The extension must present the admin password in the WebSocket query string:
   wss://predictor.03dorixona.uz/api/agent/ws?password=<password>&agent_id=<uuid>&agent_name=<name>
 """
 import asyncio
+import math
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -34,6 +35,7 @@ class AgentInfo:
     task_count: int = 0
     last_task_at: Optional[float] = None
     device_location: dict | None = None
+    version: str = ''
 
 
 class AgentBus:
@@ -61,6 +63,7 @@ class AgentBus:
                 'last_task_at': info.last_task_at,
                 'online': True,
                 'device_location': info.device_location,
+                'version': info.version,
             }
             for info in self._agents.values()
         ]
@@ -111,10 +114,11 @@ class AgentBus:
         self._store = None
         self._run_id = None
 
-    async def attach(self, ws, agent_id: str = '', agent_name: str = '') -> None:
+    async def attach(self, ws, agent_id: str = '', agent_name: str = '', version: str = '') -> None:
         info = AgentInfo(
             id=agent_id or str(uuid.uuid4()),
             name=agent_name or 'Агент',
+            version=version,
         )
         self._agents[ws] = info
         log.info('agent connected id=%s name=%r total=%d', info.id, info.name, len(self._agents))
@@ -131,7 +135,13 @@ class AgentBus:
                 if message.get('type') == 'device_location':
                     point = coordinates(message.get('lat'), message.get('lng'))
                     if point:
-                        info.device_location = {'lat': point[0], 'lng': point[1], 'shared_at': time.time()}
+                        accuracy = message.get('accuracy')
+                        accuracy = accuracy if type(accuracy) in (int, float) and 0 <= accuracy < math.inf else None
+                        info.device_location = {'lat': point[0], 'lng': point[1], 'accuracy': accuracy,
+                                                'shared_at': time.time()}
+                    request_id = message.get('request_id')
+                    if isinstance(request_id, str) and len(request_id) <= 64:
+                        await ws.send_json({'type': 'device_location_ack', 'request_id': request_id, 'ok': bool(point)})
                     continue
                 task_id = message.get('id')
                 if task_id and task_id in self._pending:

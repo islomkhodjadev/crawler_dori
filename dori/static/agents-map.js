@@ -59,7 +59,10 @@
       const branch = branchesById.get(agent.assignment?.store_id);
       const shared = coordinates(agent.device_location);
       const assigned = branch?.store_name || t('area.unassigned');
-      add(shared, agent.name, shared ? assigned : assigned + ' · ' + t('agentMap.notShared'), 'agent');
+      const accuracy = agent.device_location?.accuracy;
+      const detail = shared ? (accuracy == null ? assigned : assigned + ' · ' + t('agentMap.accuracy', {m: Math.round(accuracy)}))
+        : assigned + ' · ' + t('agentMap.notShared');
+      add(shared, agent.name, detail, 'agent');
     }
     return {locations: [...locations.values()], missing};
   }

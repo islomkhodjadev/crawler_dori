@@ -455,7 +455,7 @@ def create_app(db_path=None):
 
     @app.websocket('/api/agent/ws')
     async def agent_ws(websocket: WebSocket, password: str = '',
-                       agent_id: str = '', agent_name: str = ''):
+                       agent_id: str = '', agent_name: str = '', version: str = ''):
         """Chrome extension connects here. Auth via ?password= query param."""
         from urllib.parse import urlparse
         origin = websocket.headers.get('origin', '')
@@ -472,7 +472,7 @@ def create_app(db_path=None):
             log.warning('agent ws rejected wrong password origin=%s', origin)
             return
         await websocket.accept()
-        await agent_bus.attach(websocket, agent_id=agent_id, agent_name=agent_name)
+        await agent_bus.attach(websocket, agent_id=agent_id, agent_name=agent_name, version=version[:24])
 
     # ------------------------------------------------------------------ queue --
 
