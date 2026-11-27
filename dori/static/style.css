@@ -227,3 +227,18 @@ button.danger-ghost:hover{background:var(--bad-soft)}
   .rv-compare{grid-template-columns:1fr}
   .rv-vs{display:none}
 }
+
+
+/* Branches and online agents map */
+#agents-map-dialog{width:min(960px,94vw);max-height:90vh;background:var(--card);color:var(--text)}
+.agents-map-heading,.agents-map-legend{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.agents-map-heading h2{margin:0}
+#agents-map-status:empty{display:none}
+#agents-map{height:min(60vh,600px);margin-top:12px;border-radius:10px;background:#e5ece8}
+.agents-map-legend{justify-content:flex-start;font-size:13px}
+.agents-map-legend span{display:inline-flex;align-items:center;gap:6px}
+.agent-map-key{display:inline-block;width:11px;height:11px;border-radius:50%;flex:none}
+.agent-map-marker{border:2px solid white;border-radius:50%;color:white;text-align:center;font:bold 13px/25px system-ui;box-shadow:0 1px 5px #0006}
+.agent-map-key.branch,.agent-map-marker.branch{background:#236292}
+.agent-map-key.agent,.agent-map-marker.agent{background:#7651a1}
+.agent-map-key.both,.agent-map-marker.both{background:#1d6b55}
