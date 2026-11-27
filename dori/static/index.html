@@ -332,7 +332,7 @@
 </dialog>
 
 <script src="/static/i18n.js"></script>
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=queue-retest-2"></script>
 <script>
 // ---- Queue tab ----
 (function () {
@@ -385,10 +385,12 @@
     qFailed.textContent  = d.failed      || 0;
   }
 
+  let statusRequest = 0;
   function pollStatus() {
+    const request = ++statusRequest;
     fetch('/api/queue/status')
       .then(r => r.json())
-      .then(renderStatus)
+      .then(data => { if (request === statusRequest) renderStatus(data); })
       .catch(() => {});
   }
 
@@ -412,9 +414,14 @@
           if (typeof toast === 'function') toast(d.detail);
           else startBtn.insertAdjacentHTML('afterend', `<span class="muted" style="font-size:12px;margin-left:8px">${d.detail}</span>`);
           startBtn.disabled = false;
+          pollStatus();
           return;
         }
+        ++statusRequest;
         applyStatus('running');
+        selectRun(d.run_id);
+        refreshRuns().catch(() => {});
+        pollStatus();
         clearInterval(pollTimer);
         pollTimer = setInterval(() => { pollStatus(); pollAgents(); }, 3000);
         startBtn.disabled = false;
@@ -427,9 +434,10 @@
 
   stopBtn && stopBtn.addEventListener('click', () => {
     stopBtn.disabled = true;
+    ++statusRequest;
     fetch('/api/queue/stop', {method: 'POST'})
-      .then(() => {
-        clearInterval(pollTimer);
+      .then(async response => {
+        if (!response.ok) throw new Error((await response.json()).detail);
         pollStatus();
         // Refresh the run dropdown and top banner immediately
         if (typeof refreshRuns === 'function') refreshRuns().catch(() => {});

@@ -7,6 +7,7 @@ let pharmacyStock = {}; // dori_product_id -> [{store_name, store_address, lat, 
 let productsPage = 0, productsTotal = 0, productsPages = 1, productsSearch = '', PAGE_SIZE = 50;
 let allStores = []; // [{store_id, store_name, store_address, lat, lng, products}]
 let selectedStores = new Set(); // store_ids to filter by
+let runSelection = 0, reportRequest = 0, renderedReportRequest = 0;
 let lastReportJson = '', lastStatsJson = '', tab = 'products', editingPrice = null;
 const SITE_NAMES = {arzon: 'ArzonApteka', oson: 'OsonApteka'};
 const $ = s => document.querySelector(s);
@@ -131,7 +132,7 @@ function renderNext() {
   $('#next-go').dataset.goto = target;
   const review = reviewItems().length, connected = ['arzon', 'oson'].filter(s => sourceState[s]?.status === 'connected').length;
   const live = runs.find(r => ['queued', 'running', 'waiting_for_human'].includes(r.status));
-  $('#badge-products').textContent = products.length || '';
+  $('#badge-products').textContent = productsTotal || '';
   // Show agent count when agents are connected; fall back to Playwright browser count
   $('#badge-connect').textContent = agentCount > 0 ? agentCount : (connected ? `${connected}/2` : '');
   $('#badge-connect').className = (agentCount > 0 || connected === 2) ? 'ok' : '';
@@ -170,8 +171,8 @@ function renderPagination() {
     <button class="ghost small" id="pg-prev" ${productsPage === 0 ? 'disabled' : ''}>&laquo; ${t('products.prev')}</button>
     <span class="muted">${from}–${to} ${t('products.of')} ${productsTotal}</span>
     <button class="ghost small" id="pg-next" ${productsPage >= productsPages - 1 ? 'disabled' : ''}>${t('products.next')} &raquo;</button>`;
-  $('#pg-prev').onclick = () => { productsPage--; loadProducts(); };
-  $('#pg-next').onclick = () => { productsPage++; loadProducts(); };
+  $('#pg-prev').onclick = () => { productsPage--; loadProducts(true); };
+  $('#pg-next').onclick = () => { productsPage++; loadProducts(true); };
 }
 async function loadProducts(keepPage = false) {
   if (!keepPage) productsPage = 0;
@@ -287,7 +288,9 @@ function renderStats() {
     : `<p class="muted">${t('collect.noEvents')}</p>`;
 }
 async function loadStatistics() {
+  const selection = runSelection;
   const data = await api('/api/statistics' + (currentRun ? '?run_id=' + currentRun : ''));
+  if (selection !== runSelection) return;
   const json = JSON.stringify(data);
   if (json === lastStatsJson) return;
   lastStatsJson = json; stats = data;
@@ -307,13 +310,23 @@ function renderRuns() {
   $('#export-candidates').href = '/api/export/candidates' + query;
   $('#export-candidates-xlsx').href = '/api/export/candidates/xlsx' + query;
 }
+function selectRun(id) {
+  if (id === currentRun) return;
+  currentRun = id;
+  runSelection++;
+  expanded.clear();
+  editingPrice = null;
+  lastReportJson = lastStatsJson = '';
+  stats = null;
+  renderReport({products: []});
+  renderStats();
+}
 async function refreshRuns() {
   runs = await api('/api/runs');
-  if (!runs.some(x => x.id === currentRun)) currentRun = runs[0]?.id ?? null;
+  if (!runs.some(x => x.id === currentRun)) selectRun(runs[0]?.id ?? null);
   activeRun = runs.some(x => ['queued', 'running', 'waiting_for_human'].includes(x.status));
   renderRuns(); renderCollect();
-  await loadReport();
-  await loadStatistics();
+  await Promise.all([loadReport(), loadStatistics()]);
   renderNext();
 }
 
@@ -497,7 +510,11 @@ async function requestAdvice(productId) {
 }
 function renderReport(report) { currentReport = report; renderReview(); renderResults(report.products); renderNext(); }
 async function loadReport(force = false) {
+  const selection = runSelection;
+  const request = ++reportRequest;
   const report = await api('/api/report' + (currentRun ? '?run_id=' + currentRun : ''));
+  if (selection !== runSelection || request < renderedReportRequest) return;
+  renderedReportRequest = request;
   const json = JSON.stringify(report);
   if (!force && (json === lastReportJson || editingPrice !== null)) return;
   lastReportJson = json;
@@ -618,7 +635,7 @@ $('#search').oninput = e => {
 $('#to-collect').onclick = () => showTab('collect');
 $('#report-filter').onchange = () => currentReport && renderResults(currentReport.products);
 $('#location-filter').onchange = () => { locationFilter = $('#location-filter').value; currentReport && renderResults(currentReport.products); };
-$('#run-select').onchange = async e => { currentRun = Number(e.target.value) || null; expanded.clear(); try { await refreshRuns(); } catch (x) { toast(x.message); } };
+$('#run-select').onchange = async e => { selectRun(Number(e.target.value) || null); renderRuns(); try { await refreshRuns(); } catch (x) { toast(x.message); } };
 $('#upload-form').onsubmit = async e => {
   e.preventDefault();
   const b = e.submitter; b.disabled = true;
@@ -710,7 +727,7 @@ $('#crawl').onclick = async () => {
   try {
     $('#crawl').disabled = true;
     const r = await post('/api/crawl', {product_ids: [...selected], sites: chosenSites(), use_ai: $('#use-ai').checked});
-    currentRun = r.run_id; await refreshRuns(); toast(t('collect.started'));
+    selectRun(r.run_id); await refreshRuns(); toast(t('collect.started'));
   } catch (x) { toast(x.message); renderCollect(); }
 };
 $('#advice-all').onclick = async () => {

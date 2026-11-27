@@ -184,7 +184,7 @@ def create_app(db_path=None):
 
     @app.post('/api/crawl')
     async def start(body: CrawlRequest):
-        if not set(body.sites) <= {'arzon', 'oson'}:
+        if not body.sites or not set(body.sites) <= {'arzon', 'oson'}:
             raise HTTPException(400, 'Supported sites: arzon, oson')
         use_ai = body.use_ai if body.use_ai is not None else bool(os.getenv('OPENAI_API_KEY'))
         if use_ai and not os.getenv('OPENAI_API_KEY'):
@@ -256,6 +256,8 @@ def create_app(db_path=None):
 
     @app.post('/api/runs/{run_id}/cancel')
     async def cancel(run_id: int):
+        if crawl_queue.is_running and crawl_queue.status().get('run_id') == run_id:
+            return await queue_stop()
         task = run_tasks.get(run_id)
         if not task:
             raise HTTPException(404, 'Active run not found')
@@ -401,7 +403,7 @@ def create_app(db_path=None):
     async def queue_start(body: QueueStartRequest, request: Request):
         if crawl_queue.is_running:
             raise HTTPException(409, 'A queue crawl is already running')
-        if not set(body.sites) <= {'arzon', 'oson'}:
+        if not body.sites or not set(body.sites) <= {'arzon', 'oson'}:
             raise HTTPException(400, 'Supported sites: arzon, oson')
         if not agent_bus.connected():
             raise HTTPException(503, 'No Chrome extension agents connected')
@@ -428,7 +430,7 @@ def create_app(db_path=None):
                 'products': len(product_ids), 'sites': list(sites)}
 
     @app.post('/api/queue/stop')
-    def queue_stop():
+    async def queue_stop():
         if not crawl_queue.is_running:
             raise HTTPException(404, 'No active queue session')
         status = crawl_queue.status()

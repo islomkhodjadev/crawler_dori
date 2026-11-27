@@ -99,6 +99,7 @@ class Store:
     @contextmanager
     def connect(self):
         db = sqlite3.connect(self.path, timeout=30)
+        db.create_function("casefold", 1, lambda value: str(value).casefold() if value is not None else None, deterministic=True)
         db.row_factory = sqlite3.Row
         db.execute('PRAGMA foreign_keys=ON')
         try:
@@ -207,19 +208,19 @@ class Store:
                 rows = db.execute('SELECT * FROM products WHERE id IN (' + ','.join('?' for _ in ids) + ') ORDER BY id', ids).fetchall()
                 return [dict(id=r['id'], batch=r['batch'], **json.loads(r['data'])) for r in rows]
             # Paginated + search + optional store filter
-            like = f'%{search.lower()}%' if search else '%'
+            like = f'%{search.casefold()}%' if search else '%'
             if store_ids:
                 sph = ','.join('?' * len(store_ids))
                 base_where = (
                     f"products.id IN (SELECT dori_product_id FROM pharmacy_stock WHERE store_id IN ({sph})) "
-                    f"AND (lower(json_extract(products.data,'$.name')) LIKE ? OR lower(json_extract(products.data,'$.manufacturer')) LIKE ?)"
+                    f"AND (casefold(json_extract(products.data,'$.name')) LIKE ? OR casefold(json_extract(products.data,'$.manufacturer')) LIKE ?)"
                 )
                 params_count = [*store_ids, like, like]
                 params_rows  = [*store_ids, like, like, page_size, page * page_size]
                 count = db.execute(f"SELECT COUNT(*) FROM products WHERE {base_where}", params_count).fetchone()[0]
                 rows  = db.execute(f"SELECT * FROM products WHERE {base_where} ORDER BY id LIMIT ? OFFSET ?", params_rows).fetchall()
             else:
-                base_where = "lower(json_extract(data,'$.name')) LIKE ? OR lower(json_extract(data,'$.manufacturer')) LIKE ?"
+                base_where = "casefold(json_extract(data,'$.name')) LIKE ? OR casefold(json_extract(data,'$.manufacturer')) LIKE ?"
                 count = db.execute(f"SELECT COUNT(*) FROM products WHERE {base_where}", (like, like)).fetchone()[0]
                 rows  = db.execute(f"SELECT * FROM products WHERE {base_where} ORDER BY id LIMIT ? OFFSET ?",
                                    (like, like, page_size, page * page_size)).fetchall()
@@ -230,17 +231,17 @@ class Store:
     def products_all_ids(self, search='', store_ids: list[int] | None = None) -> list[int]:
         """Return all product ids matching search and optional store filter (for select-all)."""
         with self.connect() as db:
-            like = f'%{search.lower()}%' if search else '%'
+            like = f'%{search.casefold()}%' if search else '%'
             if store_ids:
                 sph = ','.join('?' * len(store_ids))
                 rows = db.execute(
                     f"SELECT id FROM products WHERE id IN (SELECT dori_product_id FROM pharmacy_stock WHERE store_id IN ({sph})) "
-                    f"AND (lower(json_extract(data,'$.name')) LIKE ? OR lower(json_extract(data,'$.manufacturer')) LIKE ?) ORDER BY id",
+                    f"AND (casefold(json_extract(data,'$.name')) LIKE ? OR casefold(json_extract(data,'$.manufacturer')) LIKE ?) ORDER BY id",
                     [*store_ids, like, like]
                 ).fetchall()
             else:
                 rows = db.execute(
-                    "SELECT id FROM products WHERE lower(json_extract(data,'$.name')) LIKE ? OR lower(json_extract(data,'$.manufacturer')) LIKE ? ORDER BY id",
+                    "SELECT id FROM products WHERE casefold(json_extract(data,'$.name')) LIKE ? OR casefold(json_extract(data,'$.manufacturer')) LIKE ? ORDER BY id",
                     (like, like)
                 ).fetchall()
         return [r['id'] for r in rows]
@@ -345,12 +346,22 @@ class Store:
                 run_id = row[0]
             rows = db.execute('SELECT * FROM results WHERE run_id=?', (run_id,)).fetchall()
             advice = {r['product_id']: dict(r) for r in db.execute('SELECT * FROM price_advice WHERE run_id=?', (run_id,))}
+            products = {
+                r['id']: dict(id=r['id'], batch=r['batch'], **json.loads(r['data']))
+                for r in db.execute('SELECT * FROM products WHERE id IN (SELECT product_id FROM results WHERE run_id=?)', (run_id,))
+            }
+            offers_by_result = {}
+            for offer in db.execute(
+                'SELECT o.* FROM offers o JOIN results r ON r.id=o.result_id WHERE r.run_id=? ORDER BY o.id',
+                (run_id,),
+            ):
+                offers_by_result.setdefault(offer['result_id'], []).append(offer)
             grouped = {}
             for row in rows:
                 product_id = row['product_id']
-                entry = grouped.setdefault(product_id, {'product': self.products([product_id])[0], 'sources': {}, 'offers': []})
+                entry = grouped.setdefault(product_id, {'product': products[product_id], 'sources': {}, 'offers': []})
                 entry['sources'][row['site']] = json.loads(row['details'])
-                for offer in db.execute('SELECT * FROM offers WHERE result_id=?', (row['id'],)):
+                for offer in offers_by_result.get(row['id'], ()):
                     data = {**json.loads(offer['data']), 'id': offer['id'],
                             'match_status': offer['match_status'], 'score': offer['score'],
                             'reasons': json.loads(offer['reasons']), 'reviewed_at': offer['reviewed_at'],

@@ -74,3 +74,57 @@ async def test_agent_fetch_returns_none_on_error_response():
     await asyncio.gather(attach_task, return_exceptions=True)
 
     assert result is None
+
+
+@pytest.mark.anyio
+async def test_queue_restart_with_two_connected_workers(tmp_path, monkeypatch):
+    from dori.adapters import now
+    from dori.agent import AgentInfo
+    from dori.queue import CrawlQueue
+    from dori.storage import Store
+
+    store = Store(str(tmp_path / 'queue.sqlite3'))
+    ids = store.import_products([{'name': 'АЗИТРОМИЦИН'}, {'name': 'Амоксициллин'}], 'test')
+    assert store.products(search='азитромицин')['total'] == 1
+    assert store.products_all_ids(search='аМОКС') == [ids[1]]
+    assert store.products(page=1, page_size=1)['items'][0]['id'] == ids[1]
+
+    queue = CrawlQueue(store.path)
+    bus = AgentBus()
+    for i in range(2):
+        bus._agents[object()] = AgentInfo(str(i), f'Agent {i}')
+    entered = asyncio.Queue()
+    release = asyncio.Event()
+
+    async def search(pinned_bus, product):
+        await entered.put(product['id'])
+        await release.wait()
+        return [], {'status': 'no_results', 'observed_at': now()}
+
+    monkeypatch.setattr('dori.adapters.agent_search_oson', search)
+
+    def start():
+        run_id = store.create_run(len(ids), sites=['oson'], force=True)
+        store.update_run(run_id, status='running')
+        session = queue.create_session(run_id, 'test', len(ids))
+        queue.enqueue(session, ids, ('oson',))
+        bus.start_queue_workers(queue, store, run_id)
+        return run_id
+
+    first = start()
+    for _ in ids:
+        await asyncio.wait_for(entered.get(), timeout=2)
+    queue.stop_session()
+    bus.stop_queue_workers()
+    store.update_run(first, status='interrupted')
+    assert queue.status()['status'] == 'stopped'
+    second = start()
+    workers = list(bus._worker_tasks.values())
+    assert entered.empty()
+    release.set()
+    await asyncio.wait_for(asyncio.gather(*workers), timeout=3)
+    assert not store.report(first)['products']
+    assert len(store.report(second)['products']) == len(ids)
+    assert queue.status()['done'] == len(ids)
+    assert store.runs()[0]['status'] == 'completed'
+    assert not bus._worker_tasks

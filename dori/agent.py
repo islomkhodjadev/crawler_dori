@@ -44,7 +44,7 @@ class AgentBus:
         self._queue = None                     # CrawlQueue when session active
         self._store = None                     # Store reference for queue workers
         self._run_id: Optional[int] = None     # Active queue run id
-        self._worker_tasks: dict = {}          # agent_id -> asyncio.Task
+        self._worker_tasks: dict = {}          # ws -> asyncio.Task
 
     def connected(self) -> int:
         return len(self._agents)
@@ -71,20 +71,36 @@ class AgentBus:
         self._rr_index += 1
         return ws
 
-    def start_queue_workers(self, queue, store, run_id: int) -> None:
-        """Start a worker for every currently connected agent when a queue session begins."""
+    def _start_queue_worker(self, ws, info):
         from .queue import queue_worker
+
+        queue, store, run_id = self._queue, self._store, self._run_id
+        session_id = queue.active_session_id
+        previous = self._worker_tasks.get(ws)
+
+        async def work():
+            if previous and not previous.done():
+                await asyncio.gather(previous, return_exceptions=True)
+            await queue_worker(PinnedAgentBus(self, ws), info.id, queue, store, run_id, session_id)
+
+        task = asyncio.create_task(work())
+        self._worker_tasks[ws] = task
+
+        def forget(finished):
+            if self._worker_tasks.get(ws) is finished:
+                del self._worker_tasks[ws]
+            if not finished.cancelled() and (error := finished.exception()):
+                log.error('queue worker failed agent=%s run=%s', info.id, run_id, exc_info=error)
+
+        task.add_done_callback(forget)
+
+    def start_queue_workers(self, queue, store, run_id: int) -> None:
+        """Start workers for the new session on every connected socket."""
         self._queue = queue
         self._store = store
         self._run_id = run_id
-        for ws, info in list(self._agents.items()):
-            if info.id not in self._worker_tasks:
-                pinned = PinnedAgentBus(self, ws)
-                task = asyncio.create_task(
-                    queue_worker(pinned, info.id, queue, store, run_id)
-                )
-                self._worker_tasks[info.id] = task
-                log.info('queue worker started (existing agent) id=%s run=%s', info.id, run_id)
+        for ws, info in self._agents.items():
+            self._start_queue_worker(ws, info)
 
     def stop_queue_workers(self) -> None:
         """Clear queue refs so new workers are not started; running workers exit naturally."""
@@ -100,16 +116,8 @@ class AgentBus:
         self._agents[ws] = info
         log.info('agent connected id=%s name=%r total=%d', info.id, info.name, len(self._agents))
 
-        # If a queue session is active, start a worker for this new agent
-        worker_task: Optional[asyncio.Task] = None
-        if self._queue and self._queue.is_running and self._store and self._run_id:
-            from .queue import queue_worker
-            pinned = PinnedAgentBus(self, ws)
-            worker_task = asyncio.create_task(
-                queue_worker(pinned, info.id, self._queue, self._store, self._run_id)
-            )
-            self._worker_tasks[info.id] = worker_task
-            log.info('queue worker started (new agent) id=%s run=%s', info.id, self._run_id)
+        if self._queue and self._queue.is_running:
+            self._start_queue_worker(ws, info)
 
         try:
             async for message in ws.iter_json():
@@ -128,7 +136,7 @@ class AgentBus:
             log.info('agent disconnected id=%s: %s', info.id, type(exc).__name__)
         finally:
             # Cancel this agent's queue worker
-            task = self._worker_tasks.pop(info.id, None)
+            task = self._worker_tasks.pop(ws, None)
             if task and not task.done():
                 task.cancel()
             self._agents.pop(ws, None)
@@ -172,8 +180,8 @@ class AgentBus:
             self._pending.pop(task_id, None)
             return None
         except asyncio.CancelledError:
-            log.warning('agent task cancelled id=%s (agent disconnected)', task_id)
-            return None
+            self._pending.pop(task_id, None)
+            raise
         except Exception as exc:
             log.warning('agent task failed id=%s: %s: %s', task_id, type(exc).__name__, exc)
             self._pending.pop(task_id, None)

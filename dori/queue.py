@@ -25,6 +25,7 @@ class CrawlQueue:
     def __init__(self, db_path: str):
         self.db_path = db_path
         self._active_session_id: str | None = None
+        self._last_session_id: str | None = None
 
     @contextmanager
     def _connect(self):
@@ -44,6 +45,10 @@ class CrawlQueue:
     def is_running(self) -> bool:
         return self._active_session_id is not None
 
+    @property
+    def active_session_id(self):
+        return self._active_session_id
+
     def create_session(self, run_id: int, started_by: str, total: int) -> str:
         session_id = str(uuid.uuid4())
         with self._connect() as db:
@@ -51,7 +56,7 @@ class CrawlQueue:
                 'INSERT INTO crawl_sessions (id, run_id, started_by, started_at, total, status) VALUES (?,?,?,?,?,?)',
                 (session_id, run_id, started_by, time.time(), total, 'running')
             )
-        self._active_session_id = session_id
+        self._active_session_id = self._last_session_id = session_id
         log.info('queue session created id=%s run=%s total=%d', session_id, run_id, total)
         return session_id
 
@@ -96,6 +101,8 @@ class CrawlQueue:
                 col = 'failed' if error else 'done'
                 db.execute(f'UPDATE crawl_sessions SET {col}={col}+1 WHERE id=?',
                            (self._active_session_id,))
+                db.execute('UPDATE runs SET completed=completed+1 WHERE id=(SELECT run_id FROM crawl_sessions WHERE id=?)',
+                           (self._active_session_id,))
         self._check_complete()
 
     def _check_complete(self):
@@ -110,6 +117,14 @@ class CrawlQueue:
                 db.execute(
                     "UPDATE crawl_sessions SET status='done', finished_at=? WHERE id=?",
                     (time.time(), self._active_session_id)
+                )
+                from .adapters import now
+                finished = now()
+                db.execute(
+                    "UPDATE runs SET status='completed', completed=total, finished_at=?, last_activity=?, "
+                    "active_product_id=NULL, active_site=NULL, phase='Completed' "
+                    "WHERE id=(SELECT run_id FROM crawl_sessions WHERE id=?)",
+                    (finished, finished, self._active_session_id),
                 )
                 log.info('queue session completed id=%s', self._active_session_id)
                 self._active_session_id = None
@@ -130,12 +145,12 @@ class CrawlQueue:
         log.info('queue session stopped id=%s', sid)
 
     def status(self) -> dict:
-        if not self._active_session_id:
+        if not self._last_session_id:
             return {'status': 'idle', 'total': 0, 'done': 0, 'failed': 0,
                     'in_progress': 0, 'pending': 0}
         with self._connect() as db:
             session = db.execute(
-                'SELECT * FROM crawl_sessions WHERE id=?', (self._active_session_id,)
+                'SELECT * FROM crawl_sessions WHERE id=?', (self._last_session_id,)
             ).fetchone()
             if not session:
                 return {'status': 'idle', 'total': 0, 'done': 0, 'failed': 0,
@@ -145,7 +160,7 @@ class CrawlQueue:
                 for row in db.execute(
                     'SELECT status, COUNT(*) as count FROM crawl_queue '
                     'WHERE session_id=? GROUP BY status',
-                    (self._active_session_id,)
+                    (self._last_session_id,)
                 ).fetchall()
             }
         return {
@@ -191,7 +206,7 @@ class CrawlQueue:
             self._check_complete()
 
 
-async def queue_worker(pinned_bus, agent_id: str, queue: CrawlQueue, store, run_id: int):
+async def queue_worker(pinned_bus, agent_id: str, queue: CrawlQueue, store, run_id: int, session_id: str):
     """Process tasks from queue while the agent is connected.
 
     Runs until: queue is empty, session stopped, or agent disconnects (CancelledError).
@@ -200,10 +215,11 @@ async def queue_worker(pinned_bus, agent_id: str, queue: CrawlQueue, store, run_
     from .geocode import attach_nearest_branches
 
     log.info('queue worker start agent=%s run=%s', agent_id, run_id)
-    while True:
+    while queue.active_session_id == session_id:
         task = queue.next_task(agent_id)
         if task is None:
-            break  # No pending tasks; session done or stopped
+            await asyncio.sleep(1)  # Other workers may still finish or return work.
+            continue
 
         task_id = task['id']
         product_id = task['product_id']
@@ -232,6 +248,8 @@ async def queue_worker(pinned_bus, agent_id: str, queue: CrawlQueue, store, run_
                 details = {'status': 'skipped', 'error': f'Agent not connected for {site}',
                            'observed_at': now()}
 
+            if queue.active_session_id != session_id:
+                break
             store.save_result(run_id, product_id, site, details, offers)
             store.update_run(run_id, active_product_id=product_id, active_site=site,
                              phase=f'Queue: {site} done')
@@ -244,6 +262,8 @@ async def queue_worker(pinned_bus, agent_id: str, queue: CrawlQueue, store, run_
             raise  # watchdog will reset it to pending after TASK_TIMEOUT
 
         except Exception as exc:
+            if queue.active_session_id != session_id:
+                break
             log.exception('queue task error agent=%s product=%s site=%s', agent_id, product_id, site)
             err_msg = f'{type(exc).__name__}: {str(exc)[:200]}'
             queue.complete_task(task_id, error=err_msg)
