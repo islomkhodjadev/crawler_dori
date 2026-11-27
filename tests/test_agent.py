@@ -128,3 +128,35 @@ async def test_queue_restart_with_two_connected_workers(tmp_path, monkeypatch):
     assert queue.status()['done'] == len(ids)
     assert store.runs()[0]['status'] == 'completed'
     assert not bus._worker_tasks
+
+
+@pytest.mark.anyio
+async def test_parallel_collection_counts_all_completed_products(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from dori.agent import AgentInfo
+    from dori.service import crawl
+    from dori.storage import Store
+
+    store = Store(str(tmp_path / 'collection.sqlite3'))
+    ids = store.import_products([{'name': f'Product {i}'} for i in range(4)], 'test')
+    products = store.products(ids)
+    run_id = store.create_run(products, sites=['arzon', 'oson'])
+    bus = AgentBus()
+    for i in range(3):
+        bus._agents[object()] = AgentInfo(str(i), f'Agent {i}')
+
+    async def search(*args, **kwargs):
+        await asyncio.sleep(0)
+        return [], {'status': 'no_results'}
+
+    monkeypatch.setattr('dori.adapters.agent_search_arzon', search)
+    monkeypatch.setattr('dori.adapters.agent_search_oson', search)
+
+    await crawl(store, run_id, products, admin=SimpleNamespace(collecting=False), agent_bus=bus)
+
+    stats = store.statistics(run_id)
+    assert stats['run']['status'] == 'completed'
+    assert stats['products']['completed'] == 4
+    assert stats['progress_percent'] == 100
+    assert [source['checks_completed'] for source in stats['sources']] == [4, 4]

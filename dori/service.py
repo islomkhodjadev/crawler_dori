@@ -10,10 +10,13 @@ async def crawl(store, run_id, products, sites=('arzon', 'oson'), admin=None, us
     log.info('crawl run=%s start products=%d sites=%s ai=%s', run_id, len(products), list(sites), use_ai)
     store.update_run(run_id, status='running', sites=json.dumps(list(sites)), phase='Starting browsers')
 
+    completed_products = 0
+
     async def collect(browser, chunk=None, bus=None):
+        nonlocal completed_products
         effective_products = chunk if chunk is not None else products
         effective_bus = bus if bus is not None else agent_bus
-        for i, product in enumerate(effective_products):
+        for product in effective_products:
             for site in sites:
                 store.update_run(run_id, active_product_id=product['id'], active_site=site, phase='Searching and extracting prices')
                 while True:
@@ -51,7 +54,8 @@ async def crawl(store, run_id, products, sites=('arzon', 'oson'), admin=None, us
                         break
                 log.info('result run=%s product_id=%s site=%s status=%s offers=%d', run_id, product['id'], site, details.get('status'), len(offers))
                 store.save_result(run_id, product['id'], site, details, offers)
-            store.update_run(run_id, completed=i + 1, phase='Product completed')
+            completed_products += 1
+            store.update_run(run_id, completed=completed_products, phase='Product completed')
 
     try:
         if admin:
