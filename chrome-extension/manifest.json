@@ -1,10 +1,11 @@
 {
   "manifest_version": 3,
   "name": "Dori Price Agent",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "Connects your Chrome to the Dori server so it can fetch Oson prices through your browser.",
   "permissions": [
     "storage",
+    "geolocation",
     "alarms",
     "tabs",
     "scripting",

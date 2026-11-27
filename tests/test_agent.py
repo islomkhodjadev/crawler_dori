@@ -160,3 +160,32 @@ async def test_parallel_collection_counts_all_completed_products(tmp_path, monke
     assert stats['products']['completed'] == 4
     assert stats['progress_percent'] == 100
     assert [source['checks_completed'] for source in stats['sources']] == [4, 4]
+
+
+@pytest.mark.anyio
+async def test_agent_device_location_belongs_to_the_online_session():
+    bus = AgentBus()
+
+    class FakeWS:
+        messages = asyncio.Queue()
+
+        async def iter_json(self):
+            while True:
+                yield await self.messages.get()
+
+    ws = FakeWS()
+    connected = asyncio.create_task(bus.attach(ws, agent_id='test-agent'))
+    await asyncio.sleep(0)
+    try:
+        assert bus.agent_list()[0]['device_location'] is None
+        await ws.messages.put({'type': 'device_location', 'lat': 400, 'lng': 69.25})
+        await asyncio.sleep(0)
+        assert bus.agent_list()[0]['device_location'] is None
+        await ws.messages.put({'type': 'device_location', 'lat': 41.4, 'lng': 69.25})
+        await asyncio.sleep(0)
+        point = bus.agent_list()[0]['device_location']
+        assert (point['lat'], point['lng']) == (41.4, 69.25)
+    finally:
+        connected.cancel()
+        await asyncio.gather(connected, return_exceptions=True)
+    assert bus.agent_list() == []

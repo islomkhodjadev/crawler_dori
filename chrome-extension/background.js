@@ -415,6 +415,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }).catch(error => sendResponse({ok: false, error: error.message}));
     return true;
   }
+  if (msg.type === 'shareLocation') {
+    if (ws?.readyState !== WebSocket.OPEN) {
+      sendResponse({ok: false});
+      return;
+    }
+    ws.send(JSON.stringify({type: 'device_location', lat: msg.lat, lng: msg.lng}));
+    sendResponse({ok: true});
+    return;
+  }
   if (msg.type === 'disconnect') {
     disconnect();
     sendResponse({ ok: true });

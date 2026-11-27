@@ -18,6 +18,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Optional
+from .local_area import coordinates
 from .logs import get
 
 log = get('agent')
@@ -32,6 +33,7 @@ class AgentInfo:
     connected_at: float = field(default_factory=time.time)
     task_count: int = 0
     last_task_at: Optional[float] = None
+    device_location: dict | None = None
 
 
 class AgentBus:
@@ -58,6 +60,7 @@ class AgentBus:
                 'task_count': info.task_count,
                 'last_task_at': info.last_task_at,
                 'online': True,
+                'device_location': info.device_location,
             }
             for info in self._agents.values()
         ]
@@ -124,6 +127,11 @@ class AgentBus:
                 if not isinstance(message, dict):
                     continue
                 if message.get('type') == 'ping':
+                    continue
+                if message.get('type') == 'device_location':
+                    point = coordinates(message.get('lat'), message.get('lng'))
+                    if point:
+                        info.device_location = {'lat': point[0], 'lng': point[1], 'shared_at': time.time()}
                     continue
                 task_id = message.get('id')
                 if task_id and task_id in self._pending:

@@ -57,8 +57,9 @@
     }
     for (const agent of agents) {
       const branch = branchesById.get(agent.assignment?.store_id);
-      add(coordinates(agent.assignment) || coordinates(branch), agent.name,
-          branch?.store_name || t('area.unassigned'), 'agent');
+      const shared = coordinates(agent.device_location);
+      const assigned = branch?.store_name || t('area.unassigned');
+      add(shared, agent.name, shared ? assigned : assigned + ' · ' + t('agentMap.notShared'), 'agent');
     }
     return {locations: [...locations.values()], missing};
   }

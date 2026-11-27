@@ -9,6 +9,10 @@ const setupMessage = document.getElementById('setup-message');
 const agentNameInput = document.getElementById('agent-name');
 const btnConnect = document.getElementById('btn-connect');
 const btnDisconnect = document.getElementById('btn-disconnect');
+const shareLocation = document.getElementById('share-location');
+const locationMessage = document.getElementById('location-message');
+let sharing = false;
+let connected = false;
 const LABELS = {
   connected:    'Подключён · Connected',
   connecting:   'Подключение… · Connecting…',
@@ -17,6 +21,9 @@ const LABELS = {
 };
 
 function applyStatus({ status, error, tasksHandled, serverUrl }) {
+  connected = status === 'connected';
+  shareLocation.disabled = !connected || sharing;
+  if (!connected && !sharing) locationMessage.textContent = '';
   dot.className = 'dot ' + (status || 'disconnected');
   statusText.textContent = LABELS[status] || status;
   statusDetail.textContent = error || (status === 'connected' ? (serverUrl || '') : '');
@@ -107,3 +114,24 @@ btnConnect.addEventListener('click', async () => {
 });
 
 btnDisconnect.addEventListener('click', () => chrome.runtime.sendMessage({type: 'disconnect'}));
+
+
+shareLocation.addEventListener('click', async () => {
+  sharing = true;
+  shareLocation.disabled = true;
+  locationMessage.textContent = 'Определяем местоположение… · Finding location…';
+  try {
+    const position = await new Promise((resolve, reject) =>
+      navigator.geolocation.getCurrentPosition(resolve, reject, {maximumAge: 0, timeout: 12000}));
+    const reply = await chrome.runtime.sendMessage({
+      type: 'shareLocation', lat: position.coords.latitude, lng: position.coords.longitude,
+    });
+    if (!reply?.ok) throw new Error('Подключите агент снова · Reconnect the agent');
+    locationMessage.textContent = 'Местоположение отправлено · Location sent';
+  } catch (error) {
+    locationMessage.textContent = error.message || 'Местоположение недоступно · Location unavailable';
+  } finally {
+    sharing = false;
+    shareLocation.disabled = !connected;
+  }
+});
