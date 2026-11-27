@@ -1,14 +1,19 @@
 from collections import defaultdict
 from statistics import median
+from .local_area import eligible_for_comparison
 
 
 def estimate(offers, invoice_price=None):
     """Equal source weight prevents one aggregator from dominating another."""
     sites = defaultdict(dict)
     for offer in offers:
-        if offer.get('match_status') == 'accepted' and offer.get('currency') == 'UZS' and offer['price'] > 0:
+        if eligible_for_comparison(offer) and offer.get('match_status') == 'accepted' and offer.get('currency') == 'UZS' and offer['price'] > 0:
             # Deduplicate identical listings; never combine different products implicitly.
-            sites[offer['site']][offer['url']] = offer['price']
+            key = offer['url']
+            if offer.get('location_status') == 'nearby':
+                key = (key, offer.get('pharmacy_name'), offer.get('pharmacy_address'),
+                       offer.get('latitude'), offer.get('longitude'))
+            sites[offer['site']][key] = offer['price']
     per_site = {site: round(median(values.values()), 2) for site, values in sites.items()}
     value = round(median(per_site.values()), 2) if per_site else None
     prices = [price for listings in sites.values() for price in listings.values()]

@@ -6,6 +6,7 @@ let locationFilter = 'all';
 let pharmacyStock = {}; // dori_product_id -> [{store_name, store_address, lat, lng, qty}]
 let productsPage = 0, productsTotal = 0, productsPages = 1, productsSearch = '', PAGE_SIZE = 50;
 let allStores = []; // [{store_id, store_name, store_address, lat, lng, products}]
+let collectionBranches = new Set();
 let selectedStores = new Set(); // store_ids to filter by
 let runSelection = 0, reportRequest = 0, renderedReportRequest = 0;
 let lastReportJson = '', lastStatsJson = '', tab = 'products', editingPrice = null;
@@ -114,7 +115,9 @@ function nextStep() {
   if (!products.length) return ['products', t('next.import')];
   const waiting = runs.find(r => r.status === 'waiting_for_human');
   if (waiting) return ['connect', t('next.verify', {site: siteName((waiting.error || '').split(':')[0])})];
-  const live = runs.find(r => ['queued', 'running'].includes(r.status));
+  const live = runs.find(r => r.id === currentRun && ['queued', 'running'].includes(r.status))
+    || runs.find(r => ['queued', 'running'].includes(r.status));
+  if (live?.status === 'queued' && live.branch) return ['agents', t('area.waiting', {branch: live.branch.store_name})];
   if (live) return ['collect', t('next.running', {done: live.completed, total: live.total})];
   const review = reviewItems().length;
   if (review) return ['review', t('next.review', {n: review})];
@@ -240,11 +243,15 @@ function collectBlocker() {
   if (activeRun) return t('collect.busy');
   if (!selected.size) return t('collect.noSelection');
   if (!sites.size) return t('collect.noSites');
-  if (!connectionsReady()) return t('collect.notReady');
+  if (!collectionBranches.size && !connectionsReady()) return t('collect.notReady');
   return '';
 }
 function renderCollect() {
   $('#collect-selected').textContent = selected.size;
+  $('#collect-branches').hidden = !allStores.length;
+  $('#collect-branch-list').innerHTML = allStores.map(branch => `
+    <label class="check"><input type="checkbox" data-collect-branch="${branch.store_id}"
+      ${collectionBranches.has(branch.store_id) ? 'checked' : ''}> ${esc(branch.store_name)}</label>`).join('');
   $('#collect-sites').innerHTML = ['arzon', 'oson'].map(site => {
     const agentOk = agentConnected;
     const status = agentOk ? 'connected' : (sourceState[site]?.status || 'closed');
@@ -300,7 +307,7 @@ async function loadStatistics() {
 /* ---------- runs ---------- */
 function renderRuns() {
   $('#run-select').innerHTML = runs.length
-    ? runs.map(r => `<option value="${r.id}" ${r.id === currentRun ? 'selected' : ''}>№${r.id} · ${esc(t('run.' + r.status))} · ${esc(when(r.started_at))}</option>`).join('')
+    ? runs.map(r => `<option value="${r.id}" ${r.id === currentRun ? 'selected' : ''}>№${r.id} · ${esc(t('run.' + r.status))} · ${r.branch ? esc(r.branch.store_name) + ' · ' : ''}${esc(when(r.started_at))}</option>`).join('')
     : `<option value="">${esc(t('run.none'))}</option>`;
   const r = runs.find(x => x.id === currentRun);
   $('#cancel-run').hidden = !r || !['queued', 'running', 'waiting_for_human'].includes(r.status);
@@ -370,16 +377,25 @@ function renderReview() {
     </article>`).join('') : `<div class="card empty">${t('review.empty')}</div>`;
 }
 function offerLine(p, o) {
+  const area = o.location_status ? `<small class="location-badge">${esc(t('area.' + o.location_status, {km: o.distance_km}))}
+    · ${esc(o.search_agent)} · ${esc(o.search_lat)}, ${esc(o.search_lng)}</small>` : '';
   const locText = o.pharmacy_address || (o.location && o.location !== 'Узбекистан' && o.location !== 'Uzbekistan (site default)' ? o.location : '');
   const pharmacyLabel = o.pharmacy_name ? `<span class="pharmacy-label">🏪 ${esc(o.pharmacy_name)}</span>` : '';
   const locBadge = locText ? `<span class="location-badge">📍 ${esc(locText)}</span>` : '';
+  const verifyLocation = o.location_status === 'unknown' && o.price_kind === 'per_pharmacy' && o.pharmacy_address
+    ? `<details><summary>${t('area.verify')}</summary>
+      <form data-offer-location="${o.id}">
+        <input name="lat" type="number" step="any" min="-90" max="90" placeholder="Lat" aria-label="Latitude" required>
+        <input name="lng" type="number" step="any" min="-180" max="180" placeholder="Lon" aria-label="Longitude" required>
+        <button class="ghost small">${t('price.save')}</button>
+      </form></details>` : '';
   const branchBadge = o.nearest_branch ? `<span class="branch-badge" title="${esc(o.nearest_branch_address || '')}">🏥 ${esc(o.nearest_branch)}</span>` : '';
   return `<div class="offer ${o.match_status}">
     <div class="offer-main"><span class="site-tag ${o.site}">${siteName(o.site)}</span>
       <a href="${esc(safeUrl(o.url))}" target="_blank" rel="noopener">${esc(o.name)} ↗</a>
       ${priceBlock(o)} <span class="pill ${o.match_status === 'accepted' ? 'ok' : o.match_status === 'review' ? 'warn' : 'bad'}">${t('match.' + o.match_status)}</span>
-      ${diffInfo(p.invoice_price, o.price).html}${pharmacyLabel}${locBadge}${branchBadge}</div>
-    <p class="comment">${esc(o.comment)}</p>${decisionButtons(o)}</div>`;
+      ${diffInfo(p.invoice_price, o.price).html}${pharmacyLabel}${locBadge}${branchBadge}${area}</div>
+    <p class="comment">${esc(o.comment)}</p>${decisionButtons(o)}${verifyLocation}</div>`;
 }
 function pharmacyStockBlock(productId) {
   const rows = pharmacyStock[productId];
@@ -405,7 +421,9 @@ async function loadStores() {
       // Default: select all stores
       selectedStores = new Set(allStores.map(s => s.store_id));
     }
+    collectionBranches = new Set([...collectionBranches].filter(id => allStores.some(branch => branch.store_id === id)));
     renderStorePicker();
+    renderCollect();
   } catch (_) {}
 }
 function renderStorePicker() {
@@ -481,7 +499,8 @@ function renderResults(entries) {
     const delta = e.invoice_delta_percent == null ? null : Math.round(e.invoice_delta_percent * 10) / 10;
     const open = expanded.has(p.id);
     const rejected = locFiltered.filter(o => o.match_status === 'rejected');
-    const visible = locFiltered.filter(o => o.match_status !== 'rejected').sort((a, b) => (a.match_status === 'review' ? 0 : 1) - (b.match_status === 'review' ? 0 : 1));
+    const visible = locFiltered.filter(o => o.match_status !== 'rejected').sort((a, b) => (a.distance_km ?? Infinity) - (b.distance_km ?? Infinity)
+      || (a.match_status === 'review' ? 0 : 1) - (b.match_status === 'review' ? 0 : 1));
     return `<tr class="row ${open ? 'open' : ''}" data-expand="${p.id}">
         <td><span class="caret">${open ? '▾' : '▸'}</span><strong>${esc(p.name)}</strong><small>${esc(p.manufacturer)} · ${t('results.listings', {n: locFiltered.length})}</small></td>
         <td class="num">${money(p.invoice_price)}</td><td class="num">${siteCell('arzon')}</td><td class="num">${siteCell('oson')}</td>
@@ -490,7 +509,7 @@ function renderResults(entries) {
         <td class="num">${delta == null ? '—' : `<span class="diff ${delta < 0 ? 'cheaper' : delta > 0 ? 'pricier' : 'same'}">${delta > 0 ? '+' : ''}${delta}%</span>`}</td>
         <td><span class="pill ${status[0]}">${esc(status[1])}</span></td></tr>
       ${open ? `<tr class="detail"><td colspan="8">
-        ${pharmacyStockBlock(p.id)}
+        ${p.branch_name ? `<p><strong>${esc(p.branch_name)}</strong></p>` : pharmacyStockBlock(p.id)}
         ${entry.advice ? `<div class="advice"><b>${t('advice.label')}: ${money(entry.advice.price)}</b>
           <span class="muted">${t('advice.range', {a: money(entry.advice.low), b: money(entry.advice.high)})}</span><p>${esc(entry.advice.reason)}</p></div>` : ''}
         ${visible.map(o => offerLine(p, o)).join('') || `<p class="muted">${t('results.noListings')}</p>`}
@@ -499,7 +518,7 @@ function renderResults(entries) {
   }).join('');
 }
 // AI price advice needs confirmed competitor prices; our Excel price is optional.
-const canAdvise = entry => entry.offers.some(o => o.match_status === 'accepted' && o.price > 0);
+const canAdvise = entry => entry.offers.some(o => (!o.location_status || o.location_status === 'nearby') && o.match_status === 'accepted' && o.price > 0);
 function optimalCell(entry) {
   if (entry.advice) return `<strong class="optimal">${money(entry.advice.price)}</strong><button class="link small" data-advice="${entry.product.id}">${t('advice.recalc')}</button>`;
   if (!canAdvise(entry)) return '<span class="muted">—</span>';
@@ -516,7 +535,8 @@ async function loadReport(force = false) {
   if (selection !== runSelection || request < renderedReportRequest) return;
   renderedReportRequest = request;
   const json = JSON.stringify(report);
-  if (!force && (json === lastReportJson || editingPrice !== null)) return;
+  if (!force && (json === lastReportJson || editingPrice !== null
+    || document.activeElement?.closest('[data-offer-location]'))) return;
   lastReportJson = json;
   renderReport(report);
 }
@@ -723,10 +743,46 @@ $('#manual-form').onsubmit = async e => {
     selected.add(p.id); await loadProducts(); e.target.reset(); toast(t('products.added'));
   } catch (x) { toast(x.message); }
 };
+$('#reports').addEventListener('submit', async event => {
+  const form = event.target.closest('[data-offer-location]');
+  if (!form) return;
+  event.preventDefault();
+  const data = new FormData(form);
+  const button = form.querySelector('button');
+  button.disabled = true;
+  try {
+    await api('/api/offers/' + encodeURIComponent(form.dataset.offerLocation) + '/location', {
+      method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({lat: Number(data.get('lat')), lng: Number(data.get('lng'))}),
+    });
+    await loadReport(true);
+    toast(t('area.locationSaved'));
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    button.disabled = false;
+  }
+});
+$('#collect-branch-list').onchange = event => {
+  const id = Number(event.target.dataset.collectBranch);
+  if (!id) return;
+  if (event.target.checked) collectionBranches.add(id);
+  else collectionBranches.delete(id);
+  $('#crawl').disabled = Boolean(collectBlocker());
+};
 $('#crawl').onclick = async () => {
   try {
     $('#crawl').disabled = true;
-    const r = await post('/api/crawl', {product_ids: [...selected], sites: chosenSites(), use_ai: $('#use-ai').checked});
+    const radius = $('#collect-radius');
+    if (collectionBranches.size && (!radius.value || !radius.reportValidity())) {
+      toast(t('area.invalidRadius'));
+      renderCollect();
+      return;
+    }
+    const r = await post('/api/crawl', {
+      product_ids: [...selected], sites: chosenSites(), use_ai: $('#use-ai').checked,
+      store_ids: [...collectionBranches], radius_km: collectionBranches.size ? Number(radius.value) : 3,
+    });
     selectRun(r.run_id); await refreshRuns(); toast(t('collect.started'));
   } catch (x) { toast(x.message); renderCollect(); }
 };

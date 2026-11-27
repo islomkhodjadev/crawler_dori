@@ -71,6 +71,8 @@ async def _fetch_oson_page(agent_bus, query):
 
 def parse_oson_pharmacies(data, product_name, product_url):
     """Extract per-pharmacy offers from Oson product page SSR JSON (Pinia state or script tag)."""
+    from .local_area import pharmacy_coordinates
+
     offers = []
     try:
         import json as _json
@@ -84,12 +86,13 @@ def parse_oson_pharmacies(data, product_name, product_url):
                 region = ph.get('regionName', '') or ph.get('parentRegionName', '')
                 price = ph.get('totalAmount') or ph.get('minPrice')
                 if name and price and price > 0:
+                    lat, lng = pharmacy_coordinates(ph) or (None, None)
                     offers.append(dict(
                         site='oson', site_id=ph.get('slug', ''), name=product_name,
                         manufacturer='', price=float(price), currency='UZS',
                         url=product_url, observed_at=now(),
                         price_kind='per_pharmacy',
-                        location=region, pharmacy_name=name, pharmacy_address=addr,
+                        location=region, pharmacy_name=name, pharmacy_address=addr, latitude=lat, longitude=lng,
                     ))
         elif isinstance(data, str) and '<html' in data.lower():
             # SSR HTML — parse the script[type="application/json"] array
@@ -105,13 +108,18 @@ def parse_oson_pharmacies(data, product_name, product_url):
                         region_raw = arr[item.get('regionName', 0)] if isinstance(item.get('regionName'), int) else item.get('regionName', '')
                         price_raw = arr[item['totalAmount']] if isinstance(item.get('totalAmount'), int) else item.get('totalAmount')
                         if name and isinstance(name, str) and price_raw and isinstance(price_raw, (int, float)) and price_raw > 0:
+                            location = {}
+                            for key in ('lat', 'lng', 'lon', 'latitude', 'longitude'):
+                                ref = item.get(key)
+                                location[key] = arr[ref] if isinstance(ref, int) and 0 <= ref < len(arr) else ref
+                            lat, lng = pharmacy_coordinates(location) or (None, None)
                             offers.append(dict(
                                 site='oson', site_id='', name=product_name,
                                 manufacturer='', price=float(price_raw), currency='UZS',
                                 url=product_url, observed_at=now(),
                                 price_kind='per_pharmacy',
                                 location=region_raw if isinstance(region_raw, str) else '',
-                                pharmacy_name=name,
+                                pharmacy_name=name, latitude=lat, longitude=lng,
                                 pharmacy_address=addr_raw if isinstance(addr_raw, str) else '',
                             ))
     except Exception as exc:
@@ -133,22 +141,26 @@ async def agent_search_oson(agent_bus, product, use_ai=None):
 
     offers, html, final_url = fetched
     if offers:
-        # Try to get per-pharmacy prices from the best-matching product page.
-        # Only follow a URL that points to a product page, not the search page itself.
-        product_url = next(
-            (o.get('url') for o in offers
-             if o.get('url') and '/product' in (o.get('url') or '') and 'search' not in (o.get('url') or '')),
-            None
-        )
-        if product_url and agent_bus:
+        from .matching import match
+
+        candidates = [
+            (match(product, offer), offer) for offer in offers
+            if '/product' in (offer.get('url') or '') and 'search' not in offer['url']
+        ]
+        best = max(((decision, offer) for decision, offer in candidates if decision['status'] != 'rejected'),
+                   key=lambda item: (item[0]['status'] == 'accepted', item[0]['score']), default=None)
+        if best:
+            _, listing = best
+            product_url = listing['url']
             region_ids = [int(x) for x in os.getenv('OSON_REGION_IDS', '25').split(',') if x.strip().isdigit()]
             log.info('agent oson_pharmacies: fetching product page product_id=%s url=%s', product.get('id'), product_url)
             ph_result = await agent_bus.fetch_oson_pharmacies(product_url, region_ids)
             if ph_result:
                 ph_data = ph_result.get('data') or ph_result.get('html') or ''
-                ph_name = offers[0].get('name', product.get('name', ''))
-                ph_offers = parse_oson_pharmacies(ph_data, ph_name, product_url)
+                ph_offers = parse_oson_pharmacies(ph_data, listing['name'], product_url)
                 if ph_offers:
+                    for offer in ph_offers:
+                        offer['manufacturer'] = listing.get('manufacturer', '')
                     log.info('agent oson_pharmacies: parsed %d pharmacy offers product_id=%s', len(ph_offers), product.get('id'))
                     return ph_offers, {'status': 'ok', 'url': product_url, 'pages': 1,
                                        'extraction_method': 'agent_oson_pharmacy_page',
@@ -196,7 +208,27 @@ def parse_arzon_pharmacies(html, product_name, product_url):
     If the cart had only one item (the target product), every price line is for it.
     If somehow multiple items remain, we match by product name proximity.
     """
+    from .local_area import map_link_coordinates, pharmacy_coordinates
+
     soup = BeautifulSoup(html, 'html.parser')
+    address_points = {}
+    for address in soup.find_all(['p', 'div'], attrs={'data-latitude': True, 'data-longitude': True}):
+        label = address.get_text(' ', strip=True)
+        if label.startswith('Адрес:') and (point := pharmacy_coordinates({
+            'latitude': address['data-latitude'], 'longitude': address['data-longitude'],
+        })):
+            address_points[label.removeprefix('Адрес:').strip()] = point
+    for address in soup.find_all(['p', 'address']):
+        label = address.get_text(' ', strip=True)
+        if not label.startswith('Адрес:'):
+            continue
+        for link in address.find_all('a', href=True):
+            if point := map_link_coordinates(link['href']):
+                text = link.get_text(' ', strip=True)
+                key = label.removeprefix('Адрес:').strip()
+                if text and key != text:
+                    key = key.removesuffix(text).strip()
+                address_points[key] = point
     text = soup.get_text('\n', strip=True)
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     offers = []
@@ -242,12 +274,13 @@ def parse_arzon_pharmacies(html, product_name, product_url):
                             product_price = val  # first price as fallback
                     pending_name_score = 0.0
             if pharmacy_name and product_price:
+                lat, lng = address_points.get(addr, (None, None))
                 offers.append(dict(
                     site='arzon', site_id='', name=product_name,
                     manufacturer='', price=product_price, currency='UZS',
                     url=product_url, observed_at=now(),
                     price_kind='per_pharmacy',
-                    location=addr, pharmacy_name=pharmacy_name, pharmacy_address=addr,
+                    location=addr, pharmacy_name=pharmacy_name, pharmacy_address=addr, latitude=lat, longitude=lng,
                 ))
         i += 1
     return offers
@@ -296,6 +329,8 @@ async def agent_search_arzon(agent_bus, product, region_id=2114):
                                'extraction_method': 'agent_search_fallback',
                                'scope': 'ArzonApteka minimum prices (pharmacy page parse failed)'}
 
+    for offer in offers:
+        offer['manufacturer'] = best.get('manufacturer', '')
     log.info('agent arzon_pharmacies: parsed %d pharmacy offers product_id=%s', len(offers), product.get('id'))
     return offers, {'status': 'ok', 'url': result.get('url', product_url), 'pages': 1,
                     'extraction_method': 'agent_pharmacy_page',

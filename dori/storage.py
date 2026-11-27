@@ -32,6 +32,13 @@ CREATE TABLE IF NOT EXISTS crawl_queue (
  agent_id TEXT, started_at REAL, finished_at REAL,
  retries INTEGER NOT NULL DEFAULT 0, error TEXT
 );
+CREATE TABLE IF NOT EXISTS agent_assignments (
+ agent_id TEXT PRIMARY KEY, store_id INTEGER NOT NULL, lat REAL, lng REAL
+);
+CREATE TABLE IF NOT EXISTS competitor_locations (
+ site TEXT NOT NULL, address TEXT NOT NULL, lat REAL NOT NULL, lng REAL NOT NULL,
+ PRIMARY KEY (site, address)
+);
 CREATE TABLE IF NOT EXISTS runs (
  id INTEGER PRIMARY KEY, started_at TEXT NOT NULL, finished_at TEXT,
  status TEXT NOT NULL, total INTEGER NOT NULL, completed INTEGER NOT NULL DEFAULT 0,
@@ -83,6 +90,8 @@ class Store:
                                       'last_activity':'TEXT','sites':"TEXT NOT NULL DEFAULT '[]'"}.items():
                 if name not in existing:
                     db.execute(f'ALTER TABLE runs ADD COLUMN {name} {declaration}')
+            if 'branch' not in existing:
+                db.execute('ALTER TABLE runs ADD COLUMN branch TEXT')
             existing={row['name'] for row in db.execute('PRAGMA table_info(offers)')}
             for name, declaration in {'manual_price':'REAL','price_edited_at':'TEXT'}.items():
                 if name not in existing:
@@ -200,6 +209,61 @@ class Store:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def agent_assignments(self):
+        with self.connect() as db:
+            return {r['agent_id']: dict(r) for r in db.execute('SELECT * FROM agent_assignments')}
+
+    def assign_agent(self, agent_id, store_id, lat, lng):
+        with self.connect() as db:
+            if store_id is None:
+                db.execute('DELETE FROM agent_assignments WHERE agent_id=?', (agent_id,))
+            else:
+                db.execute('INSERT OR REPLACE INTO agent_assignments VALUES (?, ?, ?, ?)',
+                           (agent_id, store_id, lat, lng))
+
+    def competitor_locations(self):
+        with self.connect() as db:
+            return {(r['site'], r['address']): (r['lat'], r['lng']) for r in
+                    db.execute('SELECT * FROM competitor_locations')}
+
+    def set_competitor_location(self, offer_id, point):
+        from .local_area import address_key, mark_local_offers
+
+        with self.connect() as db:
+            row = db.execute(
+                'SELECT o.data, r.run_id, r.product_id FROM offers o JOIN results r ON r.id=o.result_id WHERE o.id=?',
+                (offer_id,),
+            ).fetchone()
+            if not row:
+                raise KeyError('Offer not found')
+            offer = json.loads(row['data'])
+            key = address_key(offer)
+            if not key or 'location_status' not in offer or offer.get('price_kind') != 'per_pharmacy':
+                raise ValueError('This offer has no pharmacy address for a local comparison')
+            db.execute('INSERT OR REPLACE INTO competitor_locations VALUES (?, ?, ?, ?)', (*key, *point))
+            offer['latitude'], offer['longitude'] = point
+            mark_local_offers([offer], (offer['search_lat'], offer['search_lng']),
+                              offer['radius_km'], offer['search_agent'])
+            db.execute('UPDATE offers SET data=? WHERE id=?', (json.dumps(offer, ensure_ascii=False), offer_id))
+            db.execute('DELETE FROM price_advice WHERE run_id=? AND product_id=?',
+                       (row['run_id'], row['product_id']))
+
+    def create_branch_runs(self, branches, sites):
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if db.execute("SELECT 1 FROM runs WHERE status IN ('queued','running','waiting_for_human')").fetchone():
+                raise ValueError('A crawl is already queued or running')
+            return [
+                db.execute(
+                    'INSERT INTO runs(started_at,status,total,last_activity,phase,sites,branch) VALUES (?,?,?,?,?,?,?)',
+                    (now(), 'queued', len(products), now(), 'Waiting for branch agents',
+                     json.dumps(list(sites)), json.dumps({**branch, 'prices': {
+                         p['id']: p.get('invoice_price') for p in products
+                     }}, ensure_ascii=False)),
+                ).lastrowid
+                for branch, products in branches
+            ]
+
     def products(self, ids=None, search='', page=0, page_size=50, store_ids: list[int] | None = None):
         with self.connect() as db:
             if ids is not None:
@@ -296,7 +360,12 @@ class Store:
 
     def runs(self):
         with self.connect() as db:
-            return [dict(row) for row in db.execute('SELECT * FROM runs ORDER BY id DESC LIMIT 100')]
+            runs = [dict(row) for row in db.execute('SELECT * FROM runs ORDER BY id DESC LIMIT 100')]
+        for run in runs:
+            if run['branch']:
+                branch = json.loads(run['branch'])
+                run['branch'] = {key: value for key, value in branch.items() if key != 'prices'}
+        return runs
 
     def save_result(self, run_id, product_id, site, details, offers):
         from .matching import match
@@ -344,6 +413,8 @@ class Store:
             if run_id is None:
                 row = db.execute('SELECT max(id) FROM runs').fetchone()
                 run_id = row[0]
+            context = db.execute('SELECT branch FROM runs WHERE id=?', (run_id,)).fetchone()
+            branch = json.loads(context[0]) if context and context[0] else None
             rows = db.execute('SELECT * FROM results WHERE run_id=?', (run_id,)).fetchall()
             advice = {r['product_id']: dict(r) for r in db.execute('SELECT * FROM price_advice WHERE run_id=?', (run_id,))}
             products = {
@@ -359,7 +430,11 @@ class Store:
             grouped = {}
             for row in rows:
                 product_id = row['product_id']
-                entry = grouped.setdefault(product_id, {'product': products[product_id], 'sources': {}, 'offers': []})
+                product = products[product_id]
+                if branch:
+                    product['invoice_price'] = branch['prices'].get(str(product_id))
+                    product['branch_name'] = branch['store_name']
+                entry = grouped.setdefault(product_id, {'product': product, 'sources': {}, 'offers': []})
                 entry['sources'][row['site']] = json.loads(row['details'])
                 for offer in offers_by_result.get(row['id'], ()):
                     data = {**json.loads(offer['data']), 'id': offer['id'],
@@ -385,7 +460,9 @@ class Store:
             entry['advice'] = advice.get(entry['product']['id'])
             entry['matching']=summarize_matches(entry['offers'],entry['sources'])
             result.append(entry)
-        return {'run_id': run_id, 'products': result}
+        if branch:
+            branch.pop('prices')
+        return {'run_id': run_id, 'products': result, 'branch': branch}
 
     def statistics(self, run_id=None):
         """Count product coverage separately from candidate-listing decisions."""
@@ -397,6 +474,10 @@ class Store:
                 run_id=db.execute('SELECT max(id) FROM runs').fetchone()[0]
             row=db.execute('SELECT * FROM runs WHERE id=?',(run_id,)).fetchone()
             run=dict(row) if row else None
+            if run and run['branch']:
+                branch = json.loads(run['branch'])
+                branch.pop('prices')
+                run['branch'] = branch
             candidate_rows=db.execute('''SELECT o.match_status,r.product_id,r.site
                 FROM offers o JOIN results r ON r.id=o.result_id WHERE r.run_id=?''',(run_id,)).fetchall()
             results=[dict(r) for r in db.execute('SELECT * FROM results WHERE run_id=? ORDER BY id',(run_id,))]

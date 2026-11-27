@@ -147,8 +147,8 @@ class AgentBus:
                 if entry:
                     fut, _ = entry
                     if not fut.done():
-                        fut.cancel()
-                        log.info('agent cancelled stale task id=%s (agent disconnected)', tid)
+                        fut.set_result({'error': 'Agent disconnected'})
+                        log.info('agent cleared stale task id=%s (agent disconnected)', tid)
             log.info('agent removed id=%s total=%d', info.id, len(self._agents))
 
     async def _send_task(self, payload: dict, timeout: int = FETCH_TIMEOUT,

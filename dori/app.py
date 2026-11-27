@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from .importer import read_products
 from .service import crawl
+from .local_area import coordinates, eligible_for_comparison
 from .storage import Store
 from .browser_admin import BrowserAdmin, SITES
 from .auth import AdminAuth
@@ -30,6 +31,8 @@ class CrawlRequest(BaseModel):
     product_ids: list[int] = Field(min_length=1, max_length=5000)
     sites: list[str] = Field(default_factory=lambda: ['arzon', 'oson'], min_length=1, max_length=2)
     use_ai: bool | None = None
+    store_ids: list[int] = Field(default_factory=list, max_length=100)
+    radius_km: float = Field(default=3, ge=0.1, le=25, allow_inf_nan=False)
 
 
 class ConnectionRequest(BaseModel):
@@ -182,6 +185,14 @@ def create_app(db_path=None):
     def runs():
         return store.runs()
 
+    def start_collection(run_id, products, sites, use_ai, branch=None):
+        task = asyncio.create_task(crawl(store, run_id, products, sites, admin=browsers,
+                                         use_ai=use_ai, agent_bus=agent_bus, branch=branch))
+        run_tasks[run_id] = task
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+        task.add_done_callback(lambda _: run_tasks.pop(run_id, None))
+
     @app.post('/api/crawl')
     async def start(body: CrawlRequest):
         if not body.sites or not set(body.sites) <= {'arzon', 'oson'}:
@@ -189,27 +200,47 @@ def create_app(db_path=None):
         use_ai = body.use_ai if body.use_ai is not None else bool(os.getenv('OPENAI_API_KEY'))
         if use_ai and not os.getenv('OPENAI_API_KEY'):
             raise HTTPException(400, 'Configure OPENAI_API_KEY before enabling AI parsing')
-        # Sites covered by the Chrome extension agent don't need a server-side browser session.
-        # arzon is handled by the extension (per-pharmacy checkout flow) when connected.
-        agent_sites = {'oson', 'arzon'} if agent_bus.connected() else set()
-        sites_needing_browser = [s for s in body.sites if s not in agent_sites]
-        try:
-            browsers.require_ready(sites_needing_browser)
-        except ValueError as exc:
-            raise HTTPException(409, str(exc)) from exc
         products = store.products(list(set(body.product_ids)))
         if len(products) != len(set(body.product_ids)):
             raise HTTPException(404, 'Some products do not exist')
+        sites = tuple(dict.fromkeys(body.sites))
+        if body.store_ids:
+            available = {branch['store_id']: branch for branch in store.stores()}
+            stock = store.pharmacy_stock_for_products([product['id'] for product in products])
+            stock_by_store = {}
+            for product_id, rows in stock.items():
+                for row in rows:
+                    by_product = stock_by_store.setdefault(row['store_id'], {})
+                    previous = by_product.get(product_id)
+                    if previous is None or (row['price'] and row['price'] > 0):
+                        by_product[product_id] = row['price']
+            branches = []
+            for store_id in dict.fromkeys(body.store_ids):
+                if store_id not in available:
+                    raise HTTPException(404, 'Pharmacy branch not found')
+                branch = {**available[store_id], 'radius_km': body.radius_km}
+                prices = stock_by_store.get(store_id, {})
+                branch_products = [{**product, 'invoice_price': prices[product['id']]}
+                                   for product in products if product['id'] in prices]
+                if branch_products:
+                    branches.append((branch, branch_products))
+            if not branches:
+                raise HTTPException(400, 'No selected products belong to these branches')
+            try:
+                run_ids = store.create_branch_runs(branches, sites)
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
+            for run_id, (branch, branch_products) in zip(run_ids, branches):
+                start_collection(run_id, branch_products, sites, use_ai, branch)
+            return {'run_id': run_ids[0], 'run_ids': run_ids}
+
+        agent_sites = {'oson', 'arzon'} if agent_bus.connected() else set()
         try:
-            run_id = store.create_run(products, sites=body.sites)
+            browsers.require_ready([site for site in sites if site not in agent_sites])
+            run_id = store.create_run(products, sites=sites)
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
-        task = asyncio.create_task(crawl(store, run_id, products, tuple(dict.fromkeys(body.sites)),
-                                         admin=browsers, use_ai=use_ai, agent_bus=agent_bus))
-        run_tasks[run_id] = task
-        tasks.add(task)
-        task.add_done_callback(tasks.discard)
-        task.add_done_callback(lambda _: run_tasks.pop(run_id, None))
+        start_collection(run_id, products, sites, use_ai)
         return {'run_id': run_id}
 
     @app.get('/api/browsers')
@@ -276,7 +307,29 @@ def create_app(db_path=None):
     @app.get('/api/agents')
     def agents_list():
         """List all currently connected Chrome extension agents."""
-        return agent_bus.agent_list()
+        assignments = store.agent_assignments()
+        return [{**agent, 'assignment': assignments.get(agent['id'])} for agent in agent_bus.agent_list()]
+
+    class AgentAssignmentRequest(BaseModel):
+        store_id: int | None = None
+        lat: float | None = None
+        lng: float | None = None
+
+    @app.put('/api/agents/{agent_id}/assignment')
+    def put_agent_assignment(agent_id: str, body: AgentAssignmentRequest):
+        if not any(agent['id'] == agent_id for agent in agent_bus.agent_list()):
+            raise HTTPException(404, 'Agent is offline')
+        if body.store_id is not None:
+            branch = next((item for item in store.stores() if item['store_id'] == body.store_id), None)
+            if not branch:
+                raise HTTPException(404, 'Pharmacy branch not found')
+            if body.lat is not None or body.lng is not None:
+                if not coordinates(body.lat, body.lng):
+                    raise HTTPException(400, 'Enter valid latitude and longitude together')
+            elif not coordinates(branch['lat'], branch['lng']):
+                raise HTTPException(400, 'Branch coordinates are missing. Enter the agent location.')
+        store.assign_agent(agent_id, body.store_id, body.lat, body.lng)
+        return {'ok': True}
 
     # ------------------------------------------------------------------ admin user management --
 
@@ -419,7 +472,7 @@ def create_app(db_path=None):
         sites = tuple(dict.fromkeys(body.sites))
         total = len(product_ids) * len(sites)
         try:
-            run_id = store.create_run(total, sites=sites, force=True)
+            run_id = store.create_run(total, sites=sites)
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
         store.update_run(run_id, status='running', phase='Queue crawl starting')
@@ -452,6 +505,23 @@ def create_app(db_path=None):
     @app.get('/api/statistics')
     def statistics(run_id: int | None = None):
         return store.statistics(run_id)
+
+    class CompetitorLocationRequest(BaseModel):
+        lat: float
+        lng: float
+
+    @app.put('/api/offers/{offer_id}/location')
+    def set_offer_location(offer_id: int, body: CompetitorLocationRequest):
+        point = coordinates(body.lat, body.lng)
+        if not point:
+            raise HTTPException(400, 'Enter valid latitude and longitude')
+        try:
+            store.set_competitor_location(offer_id, point)
+        except KeyError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {'ok': True}
 
     @app.get('/api/report')
     def report(run_id: int | None = None):
@@ -486,7 +556,7 @@ def create_app(db_path=None):
         if not entry:
             raise HTTPException(404, 'Product is not part of this collection')
         confirmed = [{'site': o['site'], 'name': o['name'], 'price': o['price']}
-                     for o in entry['offers'] if o['match_status'] == 'accepted' and o['price'] > 0]
+                     for o in entry['offers'] if eligible_for_comparison(o) and o['match_status'] == 'accepted' and o['price'] > 0]
         if not confirmed:
             raise HTTPException(409, 'Нет подтверждённых цен конкурентов — сначала подтвердите совпадения.')
         ours = entry['product'].get('invoice_price')
@@ -532,19 +602,23 @@ def create_app(db_path=None):
                          'estimate_uzs','estimate_status','invoice_delta_percent','arzon_status','oson_status','sources',
                          'match_status','arzon_candidates','arzon_accepted','arzon_review','arzon_rejected',
                          'oson_candidates','oson_accepted','oson_review','oson_rejected','match_notes',
-                         'optimal_price_uzs','optimal_price_reason'])
+                         'optimal_price_uzs','optimal_price_reason']
+                        + (['branch_id', 'branch_name', 'radius_km'] if report['branch'] else []))
         for entry in report['products']:
             p, e = entry['product'], entry['estimate']
             row = [p['id'], p['name'], p['manufacturer'], p.get('invoice_price'), e['per_site'].get('arzon'),
                    e['per_site'].get('oson'), e['value'], e['status'], e['invoice_delta_percent'],
                    entry['sources'].get('arzon', {}).get('status'), entry['sources'].get('oson', {}).get('status'),
-                   ' | '.join(o['url'] for o in entry['offers'] if o['match_status'] == 'accepted')]
+                   ' | '.join(o['url'] for o in entry['offers'] if eligible_for_comparison(o) and o['match_status'] == 'accepted')]
             summary=entry['matching']
             row.append(summary['status'])
             for site in ('arzon','oson'):
                 row.extend(summary['per_site'].get(site,{}).get(key,0) for key in ('candidates','accepted','review','rejected'))
             row.append(summary['notes'])
             row.extend([entry['advice']['price'], entry['advice']['reason']] if entry.get('advice') else ['', ''])
+            if report['branch']:
+                branch = report['branch']
+                row.extend([branch['store_id'], branch['store_name'], branch['radius_km']])
             # Prevent spreadsheet formula execution from untrusted names/manufacturers.
             writer.writerow(["'" + v if isinstance(v, str) and v.lstrip().startswith(('=', '+', '-', '@')) else v for v in row])
         return Response('\ufeff' + out.getvalue(), media_type='text/csv; charset=utf-8',
@@ -579,6 +653,8 @@ def create_app(db_path=None):
         header_font = Font(bold=True, color='FFFFFF')
         header_fill = PatternFill('solid', fgColor='1D6B55')
         headers = ['\u0422\u043e\u0432\u0430\u0440','\u041f\u0440\u043e\u0438\u0437\u0432\u043e\u0434\u0438\u0442\u0435\u043b\u044c','\u041d\u0430\u0448\u0430 \u0446\u0435\u043d\u0430','Arzon','Oson','\u0420\u044b\u043d\u043e\u0447\u043d\u0430\u044f \u0446\u0435\u043d\u0430','\u041e\u043f\u0442\u0438\u043c\u0430\u043b\u044c\u043d\u0430\u044f \u0446\u0435\u043d\u0430','\u041a \u043d\u0430\u0448\u0435\u0439 \u0446\u0435\u043d\u0435 %','\u0421\u0442\u0430\u0442\u0443\u0441']
+        if report['branch']:
+            headers.extend(['Филиал', 'Радиус, км'])
         for col, h in enumerate(headers, 1):
             cell = ws.cell(1, col, h)
             cell.font = header_font
@@ -596,10 +672,15 @@ def create_app(db_path=None):
                 f"{delta:+.1f}%" if delta is not None else '',
                 e.get('status',''),
             ]
+            if report['branch']:
+                row.extend([report['branch']['store_name'], report['branch']['radius_km']])
             ws.append(["'" + v if isinstance(v, str) and v.lstrip().startswith(('=','+','-','@')) else v for v in row])
         # Column widths
         for col, width in zip(range(1, 10), [45, 25, 14, 14, 14, 14, 16, 12, 14]):
             ws.column_dimensions[get_column_letter(col)].width = width
+        if report['branch']:
+            ws.column_dimensions['J'].width = 30
+            ws.column_dimensions['K'].width = 14
         buf = io.BytesIO()
         wb.save(buf)
         buf.seek(0)
