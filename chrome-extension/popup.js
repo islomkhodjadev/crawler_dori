@@ -1,10 +1,11 @@
-const SERVER_URL = 'https://predictor.03dorixona.uz';
-
 const dot = document.getElementById('dot');
 const statusText = document.getElementById('status-text');
 const statusDetail = document.getElementById('status-detail');
 const tasksLabel = document.getElementById('tasks-label');
 const pwInput = document.getElementById('pw');
+const branchInput = document.getElementById('branch');
+const loadBranchesButton = document.getElementById('load-branches');
+const setupMessage = document.getElementById('setup-message');
 const agentNameInput = document.getElementById('agent-name');
 const btnConnect = document.getElementById('btn-connect');
 const btnDisconnect = document.getElementById('btn-disconnect');
@@ -30,69 +31,102 @@ function applyStatus({ status, error, tasksHandled, serverUrl }) {
     : '';
 }
 
-// Load saved config and geolocation into fields
-chrome.storage.local.get(['agentName', 'geoLat', 'geoLon']).then(d => {
-  agentNameInput.value = d.agentName || '';
-  if (d.geoLat != null) latInput.value = d.geoLat;
-  if (d.geoLon != null) lonInput.value = d.geoLon;
-  if (d.geoLat != null && d.geoLon != null) {
-    geoStatus.textContent = `📍 ${parseFloat(d.geoLat).toFixed(5)}, ${parseFloat(d.geoLon).toFixed(5)}`;
+let storedBranch = '';
+let branches = new Map();
+let branchesPassword = null;
+
+async function loadBranches() {
+  const requestedPassword = pwInput.value;
+  const chosen = branchInput.value || storedBranch;
+  branchInput.disabled = btnConnect.disabled = loadBranchesButton.disabled = true;
+  setupMessage.textContent = '';
+  try {
+    const reply = await chrome.runtime.sendMessage({type: 'loadBranches', password: requestedPassword});
+    if (requestedPassword !== pwInput.value) return;
+    if (!reply?.ok) throw new Error(reply?.error || 'Не удалось загрузить филиалы · Could not load branches');
+    branches = new Map(reply.items.map(branch => [String(branch.store_id), branch]));
+    const empty = new Option('Выберите филиал · Select a branch', '');
+    branchInput.replaceChildren(empty, ...[...branches].map(([id, branch]) =>
+      new Option(branch.store_address ? branch.store_name + ' · ' + branch.store_address : branch.store_name, id)));
+    if (branches.has(chosen)) branchInput.value = chosen;
+    branchesPassword = requestedPassword;
+    if (!branches.size) setupMessage.textContent = 'Нет синхронизированных филиалов · No synced branches';
+    branchInput.disabled = !branches.size;
+    btnConnect.disabled = !branchInput.value;
+  } catch (error) {
+    setupMessage.textContent = error.message;
+  } finally {
+    loadBranchesButton.disabled = false;
+  }
+}
+
+chrome.storage.local.get(['agentName', 'storeId', 'password', 'geoLat', 'geoLon']).then(data => {
+  storedBranch = String(data.storeId ?? '');
+  agentNameInput.value = data.agentName || '';
+  latInput.value = data.geoLat ?? '';
+  lonInput.value = data.geoLon ?? '';
+  if (data.password && !pwInput.value) loadBranches();
+});
+
+chrome.runtime.sendMessage({type: 'getStatus'}, response => {
+  if (response) applyStatus(response);
+});
+chrome.runtime.onMessage.addListener(message => {
+  if (message.type === 'status') applyStatus(message);
+});
+
+pwInput.addEventListener('input', () => {
+  branchInput.disabled = true;
+  btnConnect.disabled = true;
+  branchesPassword = null;
+});
+pwInput.addEventListener('keydown', event => {
+  if (event.key === 'Enter' && !loadBranchesButton.disabled) loadBranches();
+});
+loadBranchesButton.addEventListener('click', loadBranches);
+branchInput.addEventListener('change', () => {
+  const branch = branches.get(branchInput.value);
+  if (branch) agentNameInput.value = branch.store_name;
+  btnConnect.disabled = !branch;
+});
+
+btnConnect.addEventListener('click', async () => {
+  const branch = branches.get(branchInput.value);
+  if (!branch || branchesPassword !== pwInput.value) return;
+  if (!latInput.reportValidity() || !lonInput.reportValidity()) return;
+  const lat = latInput.value === '' ? null : Number(latInput.value);
+  const lng = lonInput.value === '' ? null : Number(lonInput.value);
+  if ((lat === null) !== (lng === null)) {
+    setupMessage.textContent = 'Укажите обе координаты · Enter both coordinates';
+    return;
+  }
+  setupMessage.textContent = '';
+  btnConnect.disabled = true;
+  try {
+    const reply = await chrome.runtime.sendMessage({
+      type: 'connect', password: pwInput.value, storeId: branch.store_id,
+      agentName: agentNameInput.value.trim() || branch.store_name, lat, lng,
+    });
+    if (!reply?.ok) throw new Error(reply?.error || 'Connection failed');
+    storedBranch = branchInput.value;
+  } catch (error) {
+    setupMessage.textContent = error.message;
+  } finally {
+    btnConnect.disabled = branchesPassword !== pwInput.value || !branchInput.value;
   }
 });
 
-// Ask background for current status
-chrome.runtime.sendMessage({ type: 'getStatus' }, resp => {
-  if (resp) applyStatus(resp);
-});
-
-// Listen for status updates pushed from background
-chrome.runtime.onMessage.addListener(msg => {
-  if (msg.type === 'status') applyStatus(msg);
-});
-
-btnConnect.addEventListener('click', () => {
-  const pw = pwInput.value;
-  const agentName = agentNameInput.value.trim();
-  if (!pw) { statusDetail.textContent = 'Введите пароль.'; return; }
-  if (agentName) chrome.storage.local.set({ agentName });
-  chrome.runtime.sendMessage({ type: 'connect', serverUrl: SERVER_URL, password: pw, agentName });
-});
-
-btnDisconnect.addEventListener('click', () => {
-  chrome.runtime.sendMessage({ type: 'disconnect' });
-});
-
-// Geolocation controls
+btnDisconnect.addEventListener('click', () => chrome.runtime.sendMessage({type: 'disconnect'}));
 btnDetectGeo.addEventListener('click', () => {
   geoStatus.textContent = 'Определяем…';
-  navigator.geolocation.getCurrentPosition(pos => {
-    const lat = pos.coords.latitude.toFixed(6);
-    const lon = pos.coords.longitude.toFixed(6);
-    latInput.value = lat;
-    lonInput.value = lon;
-    chrome.storage.local.set({ geoLat: lat, geoLon: lon });
-    geoStatus.textContent = `📍 ${lat}, ${lon}`;
-    chrome.runtime.sendMessage({ type: 'setGeo', lat, lon });
-  }, err => {
-    geoStatus.textContent = 'Ошибка: ' + err.message;
-  });
+  navigator.geolocation.getCurrentPosition(position => {
+    latInput.value = position.coords.latitude.toFixed(6);
+    lonInput.value = position.coords.longitude.toFixed(6);
+    geoStatus.textContent = '';
+  }, error => { geoStatus.textContent = error.message; });
 });
-
 btnClearGeo.addEventListener('click', () => {
   latInput.value = '';
   lonInput.value = '';
-  chrome.storage.local.remove(['geoLat', 'geoLon']);
-  geoStatus.textContent = 'Геолокация сброшена · Cleared';
-  chrome.runtime.sendMessage({ type: 'setGeo', lat: null, lon: null });
+  geoStatus.textContent = 'Будут использованы координаты филиала · Using branch coordinates';
 });
-
-// Save lat/lon on manual input
-[latInput, lonInput].forEach(inp => inp.addEventListener('change', () => {
-  const lat = latInput.value.trim();
-  const lon = lonInput.value.trim();
-  if (lat && lon) {
-    chrome.storage.local.set({ geoLat: lat, geoLon: lon });
-    geoStatus.textContent = `📍 ${parseFloat(lat).toFixed(5)}, ${parseFloat(lon).toFixed(5)}`;
-    chrome.runtime.sendMessage({ type: 'setGeo', lat, lon });
-  }
-}));

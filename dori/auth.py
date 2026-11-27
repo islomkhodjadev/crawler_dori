@@ -127,13 +127,16 @@ class AdminAuth:
         db.commit()
         db.close()
 
+    def agent_password(self):
+        return os.getenv('DORI_AGENT_PASSWORD', '') or self.password
+
     def check_ws_password(self, password: str) -> bool:
         """Validate a plain-text password from the agent WebSocket query param.
 
         Uses DORI_AGENT_PASSWORD or DORI_ADMIN_PASSWORD env var if set.
         If neither is set, allows any connection (open-access mode).
         """
-        agent_pw = os.getenv('DORI_AGENT_PASSWORD', '') or self.password
+        agent_pw = self.agent_password()
         if not agent_pw:
             return True  # No password configured: open access
         return secrets.compare_digest(password.encode(), agent_pw.encode())
@@ -141,7 +144,7 @@ class AdminAuth:
     def install(self, app):
         @app.middleware('http')
         async def protect(request, call_next):
-            if request.url.path not in ('/login', '/api/login') and not self.authorized(request.cookies):
+            if request.url.path not in ('/login', '/api/login', '/api/agent/setup') and not self.authorized(request.cookies):
                 if request.url.path.startswith('/api/'):
                     return JSONResponse({'detail': 'Admin sign-in required'}, status_code=401)
                 return RedirectResponse('/login', status_code=303)

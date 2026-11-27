@@ -5,6 +5,7 @@ import io
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from uuid import UUID
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -116,7 +117,9 @@ def create_app(db_path=None):
         origin = request.headers.get('origin')
         if request.method not in ('GET', 'HEAD', 'OPTIONS') and origin:
             from urllib.parse import urlparse
-            if urlparse(origin).netloc != request.headers.get('host'):
+            parsed = urlparse(origin)
+            extension_setup = request.url.path == '/api/agent/setup' and parsed.scheme == 'chrome-extension'
+            if parsed.netloc != request.headers.get('host') and not extension_setup:
                 return Response('Cross-origin requests are not allowed', status_code=403)
         return await call_next(request)
 
@@ -315,12 +318,9 @@ def create_app(db_path=None):
         lat: float | None = None
         lng: float | None = None
 
-    @app.put('/api/agents/{agent_id}/assignment')
-    def put_agent_assignment(agent_id: str, body: AgentAssignmentRequest):
-        if not any(agent['id'] == agent_id for agent in agent_bus.agent_list()):
-            raise HTTPException(404, 'Agent is offline')
+    def assign_agent_branch(agent_id, body, branches):
         if body.store_id is not None:
-            branch = next((item for item in store.stores() if item['store_id'] == body.store_id), None)
+            branch = next((item for item in branches if item['store_id'] == body.store_id), None)
             if not branch:
                 raise HTTPException(404, 'Pharmacy branch not found')
             if body.lat is not None or body.lng is not None:
@@ -329,7 +329,29 @@ def create_app(db_path=None):
             elif not coordinates(branch['lat'], branch['lng']):
                 raise HTTPException(400, 'Branch coordinates are missing. Enter the agent location.')
         store.assign_agent(agent_id, body.store_id, body.lat, body.lng)
+
+    @app.put('/api/agents/{agent_id}/assignment')
+    def put_agent_assignment(agent_id: str, body: AgentAssignmentRequest):
+        if not any(agent['id'] == agent_id for agent in agent_bus.agent_list()):
+            raise HTTPException(404, 'Agent is offline')
+        assign_agent_branch(agent_id, body, store.stores())
         return {'ok': True}
+
+    class AgentSetupRequest(AgentAssignmentRequest):
+        password: str = Field(min_length=1, max_length=1024)
+        agent_id: UUID | None = None
+
+    @app.post('/api/agent/setup')
+    def agent_setup(body: AgentSetupRequest):
+        if not auth.agent_password() or not auth.check_ws_password(body.password):
+            raise HTTPException(401, 'Incorrect agent password')
+        branches = store.stores()
+        if body.agent_id is not None:
+            if body.store_id is None:
+                raise HTTPException(400, 'Choose a pharmacy branch')
+            assign_agent_branch(str(body.agent_id), body, branches)
+        return {'items': [{'store_id': branch['store_id'], 'store_name': branch['store_name'],
+                           'store_address': branch['store_address']} for branch in branches]}
 
     # ------------------------------------------------------------------ admin user management --
 

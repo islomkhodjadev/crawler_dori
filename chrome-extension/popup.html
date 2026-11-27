@@ -52,7 +52,7 @@
   .status-detail { font-size: 11px; color: var(--muted); }
   .tasks { font-size: 11px; color: var(--muted); }
   label { font-size: 12px; font-weight: 600; color: var(--muted); display: block; margin-bottom: 3px; }
-  input {
+  input, select {
     width: 100%;
     padding: 8px 10px;
     border: 1px solid var(--border);
@@ -61,7 +61,7 @@
     color: var(--text);
     background: var(--bg);
   }
-  input:focus { outline: 2px solid var(--green); border-color: transparent; }
+  input:focus, select:focus { outline: 2px solid var(--green); border-color: transparent; }
   .row { display: flex; gap: 8px; }
   button {
     flex: 1;
@@ -101,15 +101,23 @@
 
 <div class="card">
   <div>
-    <label>Название аптеки · Pharmacy name</label>
-    <input id="agent-name" type="text" placeholder="ФОМ №1" autocomplete="off">
+    <label for="pw">Пароль агента · Agent password</label>
+    <input id="pw" type="password" autocomplete="current-password">
+  </div>
+  <button id="load-branches">Загрузить филиалы · Load branches</button>
+  <div>
+    <label for="branch">Филиал · Branch</label>
+    <select id="branch" disabled>
+      <option value="">Выберите филиал · Select a branch</option>
+    </select>
   </div>
   <div>
-    <label>Пароль · Password</label>
-    <input id="pw" type="password" placeholder="Пароль администратора" autocomplete="current-password">
+    <label for="agent-name">Имя агента · Agent name</label>
+    <input id="agent-name" type="text" maxlength="100" autocomplete="off">
   </div>
+  <div id="setup-message" class="status-detail" role="status"></div>
   <div class="row">
-    <button class="primary" id="btn-connect">Подключить</button>
+    <button class="primary" id="btn-connect" disabled>Подключить</button>
     <button id="btn-disconnect">Отключить</button>
   </div>
 </div>
@@ -117,15 +125,15 @@
 <div class="card">
   <div style="font-size:12px;font-weight:600;color:var(--muted)">📍 Геолокация · Location <span style="font-weight:400">(опционально)</span></div>
   <div class="row">
-    <input id="lat" type="number" step="any" placeholder="Широта · Lat (41.29…)" style="flex:1">
-    <input id="lon" type="number" step="any" placeholder="Долгота · Lon (69.24…)" style="flex:1">
+    <input id="lat" type="number" step="any" min="-90" max="90" placeholder="Широта · Lat (41.29…)" style="flex:1">
+    <input id="lon" type="number" step="any" min="-180" max="180" placeholder="Долгота · Lon (69.24…)" style="flex:1">
   </div>
   <div class="row">
     <button id="btn-detect-geo" style="flex:1">Определить · Detect</button>
     <button id="btn-clear-geo" style="flex:1">Сбросить · Clear</button>
   </div>
   <div id="geo-status" style="font-size:11px;color:var(--muted)"></div>
-  <div class="hint" style="margin-top:0">Если указаны координаты, ArzonApteka будет показывать аптеки рядом с этой точкой.<br>If set, ArzonApteka returns pharmacies near this location.</div>
+  <div class="hint" style="margin-top:0">Координаты задают центр поиска в Predictor. Если поля пустые, используются координаты филиала.<br>Leave blank to use the branch location.</div>
 </div>
 
 <div class="hint">

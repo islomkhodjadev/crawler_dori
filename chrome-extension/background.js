@@ -24,8 +24,6 @@ let agentId = '';
 let status = 'disconnected'; // 'disconnected' | 'connecting' | 'connected' | 'error'
 let lastError = '';
 let tasksHandled = 0;
-let geoLat = null;
-let geoLon = null;
 
 // ------------------------------------------------------------------ storage --
 
@@ -35,7 +33,7 @@ function generateUUID() {
 }
 
 async function loadConfig() {
-  const data = await chrome.storage.local.get(['serverUrl', 'password', 'agentName', 'agentId', 'geoLat', 'geoLon']);
+  const data = await chrome.storage.local.get(['serverUrl', 'password', 'agentName', 'agentId']);
   serverUrl = data.serverUrl || SERVER_URL_DEFAULT;
   password = data.password || '';
   agentName = data.agentName || '';
@@ -46,15 +44,13 @@ async function loadConfig() {
     agentId = generateUUID();
     await chrome.storage.local.set({ agentId });
   }
-  geoLat = data.geoLat ?? null;
-  geoLon = data.geoLon ?? null;
 }
 
-async function saveConfig(url, pw, name) {
+async function saveConfig(url, pw, name, storeId, lat, lng) {
   serverUrl = url;
   password = pw;
   agentName = name || agentName;
-  await chrome.storage.local.set({ serverUrl: url, password: pw, agentName: agentName });
+  await chrome.storage.local.set({ serverUrl: url, password: pw, agentName, storeId, geoLat: lat, geoLon: lng });
 }
 
 // ------------------------------------------------------------------ status broadcast --
@@ -87,7 +83,8 @@ function connect() {
     + '&agent_name=' + encodeURIComponent(agentName || 'Агент');
 
   setStatus('connecting');
-  ws = new WebSocket(wsUrl);
+  const socket = new WebSocket(wsUrl);
+  ws = socket;
 
   ws.onopen = () => {
     setStatus('connected');
@@ -112,11 +109,13 @@ function connect() {
     }
   };
 
-  ws.onerror = (err) => {
+  ws.onerror = () => {
+    if (ws !== socket) return;
     setStatus('error', 'WebSocket error — check server URL.');
   };
 
   ws.onclose = (event) => {
+    if (ws !== socket) return;
     ws = null;
     if (status !== 'disconnected') {
       setStatus('error', `Disconnected (${event.code}). Reconnecting…`);
@@ -145,7 +144,7 @@ function disconnect() {
 // ------------------------------------------------------------------ fetch task --
 
 async function handleFetch(task) {
-  const { id, url, site } = task;
+  const { id, url } = task;
 
   // Validate the target host
   let targetHost;
@@ -163,12 +162,6 @@ async function handleFetch(task) {
     // Create a background tab (not visible to the user unless they look at tab bar)
     const tab = await chrome.tabs.create({ url, active: false });
     tabId = tab.id;
-
-    // If geolocation is configured, inject an override immediately so the page
-    // receives our coordinates when it calls navigator.geolocation.getCurrentPosition.
-    if (geoLat != null && geoLon != null && site === 'arzon') {
-      await injectGeoOverride(tabId, parseFloat(geoLat), parseFloat(geoLon));
-    }
 
     // Wait for the tab to finish loading
     await waitForTabLoad(tabId, PAGE_LOAD_TIMEOUT_MS);
@@ -197,28 +190,6 @@ async function handleFetch(task) {
     if (tabId !== null) {
       chrome.tabs.remove(tabId).catch(() => {});
     }
-  }
-}
-
-// Inject a geolocation override into a tab so the site gets our coordinates.
-// Uses executeScript with world:'MAIN' to override navigator.geolocation directly.
-async function injectGeoOverride(tabId, lat, lon) {
-  try {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      world: 'MAIN',
-      func: (latitude, longitude) => {
-        const position = {
-          coords: { latitude, longitude, accuracy: 100, altitude: null, altitudeAccuracy: null, heading: null, speed: null },
-          timestamp: Date.now(),
-        };
-        navigator.geolocation.getCurrentPosition = (success) => success(position);
-        navigator.geolocation.watchPosition = (success) => { success(position); return 1; };
-      },
-      args: [lat, lon],
-    });
-  } catch (_) {
-    // Best-effort; tab may not be ready yet
   }
 }
 
@@ -422,12 +393,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     sendResponse({ status, error: lastError, tasksHandled, serverUrl });
     return true;
   }
-  if (msg.type === 'connect') {
-    saveConfig(msg.serverUrl, msg.password, msg.agentName).then(() => {
-      disconnect();
-      connect();
-      sendResponse({ ok: true });
-    });
+  if (msg.type === 'loadBranches' || msg.type === 'connect') {
+    configReady.then(async () => {
+      const pw = msg.password || password;
+      if (!pw) throw new Error('Введите пароль · Enter the agent password');
+      const payload = {password: pw};
+      if (msg.type === 'connect') {
+        Object.assign(payload, {agent_id: agentId, store_id: msg.storeId, lat: msg.lat, lng: msg.lng});
+      }
+      const response = await fetch(SERVER_URL_DEFAULT + '/api/agent/setup', {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : 'Agent setup failed');
+      if (msg.type === 'connect') {
+        await saveConfig(SERVER_URL_DEFAULT, pw, msg.agentName, msg.storeId, msg.lat, msg.lng);
+        disconnect();
+        connect();
+      }
+      sendResponse({ok: true, items: result.items});
+    }).catch(error => sendResponse({ok: false, error: error.message}));
     return true;
   }
   if (msg.type === 'disconnect') {
@@ -435,18 +420,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     sendResponse({ ok: true });
     return true;
   }
-  if (msg.type === 'setGeo') {
-    geoLat = msg.lat;
-    geoLon = msg.lon;
-    sendResponse({ ok: true });
-    return true;
-  }
+
 });
 
 // ------------------------------------------------------------------ startup --
 
 // Manifest V3 service workers restart frequently; reconnect on each startup.
-loadConfig().then(() => {
+const configReady = loadConfig();
+configReady.then(() => {
   if (password) connect();
 });
 

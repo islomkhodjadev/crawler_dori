@@ -117,3 +117,33 @@ def test_admin_starts_branch_collection_with_its_synced_stock(tmp_path, monkeypa
         assert report['branch']['store_id'] == 1
         assert report['products'][0]['product']['invoice_price'] == 11000
         assert client.post(f'/api/runs/{run_b}/cancel').status_code == 200
+
+
+def test_extension_loads_branch_choices_and_saves_setup_without_admin_session(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from dori.app import create_app
+
+    monkeypatch.setenv('DORI_AGENT_PASSWORD', 'extension-test-password')
+    app = create_app(str(tmp_path / 'extension.sqlite3'))
+    product = {'name': 'Stocked', 'dorixona_product_id': 101}
+    app.state.store.import_from_dorixona([product], [
+        {'store_id': 7, 'store_name': 'Branch Seven', 'store_address': 'Example street',
+         'lat': 41.3, 'lng': 69.25, 'dorixona_product_id': 101, 'name': 'Stocked', 'qty': 2},
+    ], '2026-11-27')
+    agent_id = 'b7b7f059-390b-467e-8bb2-2f8fe248dd95'
+    with TestClient(app) as client:
+        path = '/api/agent/setup'
+        extension = {'Origin': 'chrome-extension://example'}
+        assert client.post(path, json={'password': 'incorrect'}, headers=extension).status_code == 401
+        auth = {'password': 'extension-test-password'}
+        assert client.post(path, json=auth, headers={'Origin': 'https://unrelated.example'}).status_code == 403
+        response = client.post(path, json=auth, headers=extension)
+        assert response.json() == {'items': [
+            {'store_id': 7, 'store_name': 'Branch Seven', 'store_address': 'Example street'},
+        ]}
+        assert client.post(path, json={**auth, 'agent_id': agent_id, 'store_id': 999},
+                           headers=extension).status_code == 404
+        assert client.post(path, json={**auth, 'agent_id': agent_id, 'store_id': 7},
+                           headers=extension).status_code == 200
+        assert app.state.store.agent_assignments()[agent_id]['store_id'] == 7
+        assert client.get('/api/agents', headers=extension).status_code == 401
