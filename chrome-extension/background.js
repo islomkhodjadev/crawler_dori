@@ -203,6 +203,12 @@ async function handleFetch(task) {
 
 // ------------------------------------------------------------------ arzon per-pharmacy prices --
 
+function sameProductPage(expected, actual) {
+  const wanted = new URL(expected);
+  const landed = new URL(actual);
+  return wanted.origin === landed.origin && wanted.pathname.replace(/\/$/, '') === landed.pathname.replace(/\/$/, '');
+}
+
 async function handleArzonPharmacies(task) {
   const { id, product_url, region_id } = task;
 
@@ -220,6 +226,10 @@ async function handleArzonPharmacies(task) {
     await chrome.tabs.update(tabId, { url: product_url });
     await waitForTabLoad(tabId, PAGE_LOAD_TIMEOUT_MS);
     await sleep(2500);
+
+    if (!sameProductPage(product_url, (await chrome.tabs.get(tabId)).url)) {
+      throw new Error('Opened page does not match the selected Arzon product');
+    }
 
     // Set region in localStorage before interacting
     if (region_id) {
@@ -334,21 +344,26 @@ async function handleOsonPharmacies(task) {
     await waitForTabLoad(tabId, PAGE_LOAD_TIMEOUT_MS);
     await sleep(2000);
 
+    if (!sameProductPage(product_url, (await chrome.tabs.get(tabId)).url)) {
+      throw new Error('Opened page does not match the selected Oson product');
+    }
+
     // Extract per-pharmacy data from Pinia/SSR state
     const result = await chrome.scripting.executeScript({
       target: { tabId },
       world: 'MAIN',
       func: () => {
+        const productName = document.querySelector('h1')?.textContent.trim() || '';
         try {
           const app = document.querySelector('#__nuxt')?.__vue_app__;
           const pinia = app?.config?.globalProperties?.$pinia;
           const posStore = pinia?.state?.value?.['PosProductStore'];
-          if (posStore) return { source: 'pinia', data: JSON.stringify(posStore) };
+          if (posStore) return { source: 'pinia', data: JSON.stringify(posStore), url: location.href, product_name: productName };
         } catch (_) {}
         // Fallback: read SSR JSON script tag
-        const scripts = [...document.querySelectorAll('script[type="application/json"]')];
         return {
           source: 'ssr',
+          product_name: productName,
           html: document.documentElement.outerHTML,
           url: location.href,
         };
@@ -358,7 +373,7 @@ async function handleOsonPharmacies(task) {
     const res = result?.[0]?.result || {};
     tasksHandled++;
     setStatus('connected');
-    ws.send(JSON.stringify({ id, ...res, url: product_url, status: 200 }));
+    ws.send(JSON.stringify({ id, ...res, status: 200 }));
   } catch (err) {
     sendError(id, err.message || String(err));
   } finally {

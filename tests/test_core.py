@@ -149,9 +149,15 @@ def test_hard_conflicts_cannot_be_manually_accepted(tmp_path):
     pid=store.import_products([product()], 'test')[0]
     run=store.create_run([product()])
     store.save_result(run,pid,'arzon',{'status':'ok'},[offer('Тест 2000МЕ капс №30')])
-    oid=store.report(run)['products'][0]['offers'][0]['id']
+    assert store.report(run)['products'][0]['offers'] == []
+    # Earlier releases persisted rejected candidates. Their IDs remain protected.
+    with store.connect() as db:
+        row = db.execute('SELECT id FROM results WHERE run_id=?', (run,)).fetchone()
+        oid = db.execute('INSERT INTO offers(result_id,data,match_status,score,reasons) VALUES (?,?,?,?,?)',
+                         (row['id'], json.dumps(offer('Тест 2000МЕ капс №30')), 'review', 1, '[]')).lastrowid
     with pytest.raises(ValueError):
         store.review(oid,'accepted')
+    assert store.report(run)['products'][0]['offers'] == []
 
 
 def test_web_import_report_and_formula_safe_export(tmp_path):

@@ -29,15 +29,15 @@ def test_counts_distinguish_products_listings_and_ok_sources(tmp_path):
     store=Store(str(tmp_path/'db.sqlite3'))
     rid,ids=seed(store)
     data=store.statistics(rid)
-    assert data['products']=={'selected':3,'completed':2,'remaining':1,'matched':1,'review_only':1,
+    assert data['products']=={'selected':3,'completed':2,'remaining':1,'matched':1,'review_only':0,
                               'completed_without_match':1,'two_source_matches':0}
-    assert data['listings']=={'total':4,'accepted':1,'review':2,'rejected':1}
+    assert data['listings']=={'total':1,'accepted':1,'review':0,'rejected':0}
     assert data['progress_percent']==66.7
     assert data['active']['id']==ids[2] and data['active']['site']=='oson'
     sources={s['site']:s for s in data['sources']}
-    assert sources['arzon']['successful']==2 and sources['arzon']['errors']==1
-    assert sources['oson']['successful']==1 and sources['oson']['accepted']==0
-    assert sources['oson']['review']==1 and sources['oson']['no_results']==1
+    assert sources['arzon']['successful']==1 and sources['arzon']['errors']==1
+    assert sources['oson']['successful']==0 and sources['oson']['accepted']==0
+    assert sources['oson']['review']==0 and sources['oson']['no_results']==2
     assert data['events'][0]['message']=='Network failed'
 
 
@@ -45,11 +45,11 @@ def test_manual_review_changes_statistics_without_new_crawl(tmp_path):
     store=Store(str(tmp_path/'db.sqlite3'))
     rid,ids=seed(store)
     first=store.report(rid)['products'][0]
-    oid=next(o['id'] for o in first['offers'] if o['site']=='oson')
-    store.review(oid,'accepted')
+    oid=first['offers'][0]['id']
+    store.review(oid,'rejected')
     data=store.statistics(rid)
-    assert data['listings']['accepted']==2 and data['listings']['review']==1
-    assert data['products']['matched']==1 and data['products']['two_source_matches']==1
+    assert data['listings']['accepted']==0 and data['listings']['rejected']==1
+    assert data['products']['matched']==0 and data['products']['two_source_matches']==0
 
 
 def test_empty_statistics_and_run_isolation(tmp_path):
@@ -60,7 +60,7 @@ def test_empty_statistics_and_run_isolation(tmp_path):
     newer=store.create_run(store.products(ids[:1]),sites=['arzon'])
     assert store.statistics()['run_id']==newer
     assert store.statistics()['listings']['total']==0
-    assert store.statistics(rid)['listings']['total']==4
+    assert store.statistics(rid)['listings']['total']==1
 
 
 def test_old_database_migration_preserves_runs(tmp_path):
@@ -75,18 +75,19 @@ def test_old_database_migration_preserves_runs(tmp_path):
     Store(path)  # Migration is repeatable.
 
 
-def test_export_explains_ok_but_unaccepted_and_has_raw_candidates(tmp_path):
+def test_export_skips_partial_candidates(tmp_path, monkeypatch):
+    monkeypatch.setenv('ADMIN_USERNAME', 'admin')
+    monkeypatch.setenv('ADMIN_PASSWORD', 'export-test-password')
     app=create_app(str(tmp_path/'db.sqlite3'))
     with TestClient(app) as client:
+        login=client.post('/api/login',data={'username':'admin','password':'export-test-password'},follow_redirects=False)
+        assert login.status_code==303
         rid,ids=seed(app.state.store)
         stats=client.get('/api/statistics',params={'run_id':rid}).json()
-        assert stats['listings']['review']==2
+        assert stats['listings']['review']==0
         rows=list(csv.DictReader(io.StringIO(client.get('/api/export',params={'run_id':rid}).text.lstrip('\ufeff'))))
         row=rows[0]
-        assert row['oson_status']=='ok' and row['oson_price']==''
-        assert row['oson_candidates']=='1' and row['oson_review']=='1' and row['oson_accepted']=='0'
-        assert 'review' in row['match_notes']
+        assert row['oson_status']=='no_results' and row['oson_price']==''
+        assert row['oson_candidates']=='0' and row['oson_review']=='0' and row['oson_accepted']=='0'
         candidate_rows=list(csv.DictReader(io.StringIO(client.get('/api/export/candidates',params={'run_id':rid}).text.lstrip('\ufeff'))))
-        assert len(candidate_rows)==4
-        oson=next(r for r in candidate_rows if r['site']=='oson')
-        assert oson['price_uzs']=='90' and oson['match_status']=='review'
+        assert len(candidate_rows)==1 and candidate_rows[0]['site']=='arzon'

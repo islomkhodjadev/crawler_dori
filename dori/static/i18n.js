@@ -156,7 +156,7 @@ const I18N = {
     'help.colStep6h': 'Скачайте Excel', 'help.colStep6': 'Нажмите «Скачать таблицу (Excel)» — получите готовый .xlsx файл.',
     'help.faqTitle': 'Частые вопросы',
     'help.faq1q': 'Расширение установлено, но статус «Отключено»',
-    'help.faq3q': 'Oson показывает «—» в результатах', 'help.faq3a': 'Товар не найден или не прошёл проверку соответствия. Нажмите на строку товара и раскройте «Отклонённые» — возможно, нужно подтвердить вручную.',
+    'help.faq3q': 'Oson показывает «—» в результатах', 'help.faq3a': "Сравнение пропускает товар, если точное название, производитель, форма, дозировка или упаковка не подтверждены. Уточните карточку товара и запустите сбор снова.",
     'help.faq5q': 'Как добавить штрихкод для точного поиска', 'help.faq5a': 'Добавьте колонку «Штрихкод» (или barcode) в исходный Excel. При наличии штрихкода система использует его вместо названия — поиск становится точнее.',
   },
   uz: {
@@ -315,7 +315,7 @@ const I18N = {
     'help.colStep6h': "Excel ni yuklab oling", 'help.colStep6': "«Jadvalni yuklab olish (Excel)» tugmasini bosing — tayyor .xlsx fayl olinadi.",
     'help.faqTitle': "Ko'p so'raladigan savollar",
     'help.faq1q': "Kengaytma o'rnatilgan, lekin holat «Ulanmagan»",
-    'help.faq3q': "Oson natijalarida «—» ko'rinadi", 'help.faq3a': "Mahsulot topilmagan yoki moslik tekshiruvidan o'tmagan. Mahsulot satrini bosib «Rad etilganlar» bo'limini oching.",
+    'help.faq3q': "Oson natijalarida «—» ko'rinadi", 'help.faq3a': "Aniq nom, ishlab chiqaruvchi, shakl, doza yoki qadoq tasdiqlanmasa, mahsulot solishtirilmaydi. Mahsulot ma’lumotlarini to‘ldiring va yig‘ishni qayta boshlang.",
     'help.faq5q': "Aniq qidiruv uchun shtrix-kod qanday qo'shiladi", 'help.faq5a': "Manba Excel fayliga «Shtrix-kod» (yoki barcode) ustunini qo'shing. Shtrix-kod bo'lsa tizim nomning o'rniga uni ishlatadi.",
   },
   en: {
@@ -474,7 +474,7 @@ const I18N = {
     'help.colStep6h': 'Download Excel', 'help.colStep6': 'Click "Download table (Excel)" to get a ready-made .xlsx file.',
     'help.faqTitle': 'Frequently asked questions',
     'help.faq1q': 'Extension installed but status shows "Not connected"',
-    'help.faq3q': 'Oson shows "—" in results', 'help.faq3a': 'The product was not found or did not pass the match check. Click the product row and expand "Rejected" to review manually.',
+    'help.faq3q': 'Oson shows "—" in results', 'help.faq3a': "Listings are skipped when the exact name, manufacturer, form, strength or package cannot be verified. Complete the product record and run collection again.",
     'help.faq5q': 'How to add a barcode for more accurate searches', 'help.faq5a': 'Add a "barcode" (or Штрихкод) column to your source Excel file. When a barcode is present the system uses it instead of the name for a more precise match.',
   },
 };

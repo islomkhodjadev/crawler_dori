@@ -33,13 +33,14 @@ def norm(s):
     return re.sub(r'[^a-z0-9]+', ' ', s.translate(TRANSLIT)).strip()
 
 
-def attributes(name):
+def attributes(name, *, strict=False):
     s = unicodedata.normalize('NFKC', name).casefold().replace(',', '.')
     # Strip parenthetical manufacturer/brand annotations like "(NOW Vitamin D-3)" or "(Now Foods (США))"
     # that sites append to the drug name — they pollute the brand score.
     # Two passes handles one level of nesting: inner first, then outer.
-    s = re.sub(r'\([^()]{2,60}\)', ' ', s)
-    s = re.sub(r'\([^()]{2,60}\)', ' ', s)
+    if not strict:
+        for _ in range(2):
+            s = re.sub(r'\([^()]{2,60}\)', ' ', s)
     # Normalize reversed percent notation: "%5" → "5%" so the unit extractor finds it.
     s = re.sub(r'%\s*(\d+(?:\.\d+)?)\b', r'\1%', s)
     # Collapse grouped numeric thousands such as "5 000МЕ" or "10 000мг" before unit extraction.
@@ -62,8 +63,15 @@ def attributes(name):
     forms = sorted(key for key, pattern in FORMS.items() if re.search(pattern, s))
     for pattern in FORMS.values():
         clean = re.sub(pattern, ' ', clean)
-    clean = re.sub(r'\b(?:п/о|флак|назал|д/лица|д/тела)\b', ' ', clean)
-    return dict(brand=norm(clean), pack=pack, measures=sorted(measures), forms=forms)
+    if strict:
+        clean = clean.replace('/', ' per ')
+    else:
+        clean = re.sub(r'\b(?:п/о|флак|назал|д/лица|д/тела)\b', ' ', clean)
+    parsed = dict(brand=norm(clean), pack=pack, measures=sorted(measures), forms=forms)
+    if strict:
+        parsed['pack_layout'] = tuple(int(part) for part in count.groups() if part) if count else ()
+        parsed['measure_order'] = measures
+    return parsed
 
 
 LEGAL_FORMS = {'ooo','oo','oao','ao','pao','ip','ltd','limited','llc','inc','sa','s','a','pvt','gmbh','ag','jsc','zao'}
@@ -143,8 +151,8 @@ def match(product, offer):
         elif not a[key] or not b[key]:
             missing.append(f'{key} incomplete')
     # Websites list "distributor (country), manufacturer (country)"; any listed party may match.
-    ma = manufacturer_key(product.get('manufacturer', ''))
-    listed = [k for k in (manufacturer_key(part) for part in re.split(r'[,;]', offer.get('manufacturer', ''))) if k]
+    ma = manufacturer_key(product.get('manufacturer') or '')
+    listed = [k for k in (manufacturer_key(part) for part in re.split(r'[,;]', offer.get('manufacturer') or '')) if k]
     manufacturer_score = max((same_manufacturer(ma, k) for k in listed), default=0) if ma else 0
     if ma and listed and manufacturer_score < .78:
         conflicts.append('manufacturer differs')
@@ -174,6 +182,41 @@ def match(product, offer):
         status = 'review'
         reasons.append('Page extraction requires review of product/price association')
     return dict(status=status, score=score, reasons=conflicts + missing + reasons or ['name and package attributes agree'])
+
+
+def identity_label(name, manufacturer):
+    annotation = re.search(r'\s+\(([^()]+(?:\s*\([^()]+\))?)\)$', name)
+    maker = manufacturer_key(manufacturer or '')
+    if annotation and maker and manufacturer_key(annotation[1]) == maker:
+        return name[:annotation.start()]
+    return name
+
+
+def same_product_label(a, b):
+    """Compare full product labels with normalized units and formatting."""
+    left, right = attributes(a, strict=True), attributes(b, strict=True)
+    return bool(left['brand']) and left == right
+
+
+def exact_match(product, offer):
+    """Require positive evidence of the same brand, manufacturer and package."""
+    decision = match(product, offer)
+    if decision['status'] == 'rejected':
+        return decision
+    reasons = []
+    if not same_product_label(identity_label(product['name'], product.get('manufacturer')),
+                              identity_label(offer['name'], offer.get('manufacturer'))):
+        reasons.append('Exact name or package differs')
+    maker = manufacturer_key(product.get('manufacturer') or '')
+    if not maker or maker != manufacturer_key(offer.get('manufacturer') or ''):
+        reasons.append('Exact manufacturer is unverified')
+    if offer.get('price_kind') == 'per_pharmacy' and not offer.get('identity_verified'):
+        reasons.append('Product page or pharmacy price association is unverified')
+    if decision['status'] != 'accepted':
+        reasons.extend(decision['reasons'])
+    if reasons:
+        return {**decision, 'status': 'rejected', 'reasons': reasons}
+    return decision
 
 
 def search_term(product, site=None):

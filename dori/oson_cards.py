@@ -38,12 +38,15 @@ def parse_oson_cards(html, page_url):
                     break
             if title:
                 name=title.get_text(' ',strip=True)
-                prefix=name.split(' (',1)[0]
-                if re.search(r'№\s*\d|\d\s*(?:мг|мл|mg|ml)',prefix,re.I):
-                    name=prefix
                 maker=parent.select_one('[itemprop="manufacturer"], [data-manufacturer], .manufacturer')
                 manufacturer=(maker.get('data-manufacturer') or maker.get_text(' ',strip=True)) if maker else ''
-                # A title with maker appended is retained verbatim; AI can separate it.
+                # Remove a trailing company annotation only when it is explicitly labelled by a legal form.
+                annotation = re.search(r'\s+\(([^()]+(?:\s*\([^()]+\))?)\)$', name)
+                if annotation and re.search(r'\b(?:ООО|АО|LLC|LTD|GmbH)\b', annotation[1], re.I):
+                    from .matching import manufacturer_key
+                    if not manufacturer or manufacturer_key(manufacturer) == manufacturer_key(annotation[1]):
+                        manufacturer = manufacturer or annotation[1]
+                        name = name[:annotation.start()]
                 link=title if title.name=='a' else title.find_parent('a',href=True)
                 if not link:
                     link=next((a for a in parent.select('a[href]') if a.get_text(' ',strip=True).casefold()=='подробнее'),None)

@@ -32,7 +32,7 @@ async def test_branch_runs_use_only_assigned_agents_and_local_prices(tmp_path, m
     async def search(agent, product, **kwargs):
         calls.append((agent._ws, product['id']))
         return [
-            {'site': 'oson', 'price_kind': 'per_pharmacy', 'name': product['name'],
+            {'site': 'oson', 'price_kind': 'per_pharmacy', 'identity_verified': True, 'name': product['name'],
              'manufacturer': product['manufacturer'], 'price': price, 'currency': 'UZS',
              'pharmacy_name': f'Pharmacy {lat}', 'latitude': lat, 'longitude': 69.25,
              'url': 'https://osonapteka.uz/product/example'}

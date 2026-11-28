@@ -368,13 +368,17 @@ class Store:
         return runs
 
     def save_result(self, run_id, product_id, site, details, offers):
-        from .matching import match
+        from .matching import exact_match
+
         product = self.products([product_id])[0]
+        verified = [(offer, exact_match(product, offer)) for offer in offers]
+        verified = [(offer, decision) for offer, decision in verified if decision['status'] == 'accepted']
+        if details['status'] == 'ok' and not verified:
+            details = {**details, 'status': 'no_results', 'warning': 'Точное совпадение не найдено'}
         with self.connect() as db:
             cursor = db.execute('INSERT INTO results(run_id,product_id,site,status,details) VALUES (?,?,?,?,?)',
                                 (run_id, product_id, site, details['status'], json.dumps(details)))
-            for offer in offers:
-                decision = match(product, offer)
+            for offer, decision in verified:
                 db.execute('INSERT INTO offers(result_id,data,match_status,score,reasons) VALUES (?,?,?,?,?)',
                            (cursor.lastrowid, json.dumps(offer, ensure_ascii=False), decision['status'],
                             decision['score'], json.dumps(decision['reasons'])))
@@ -383,13 +387,19 @@ class Store:
         if status not in ('accepted','rejected'):
             raise ValueError('Choose accepted or rejected')
         with self.connect() as db:
-            row = db.execute('SELECT reasons FROM offers WHERE id=?', (offer_id,)).fetchone()
+            row = db.execute(
+                'SELECT o.data AS offer, p.data AS product, r.run_id, r.product_id '
+                'FROM offers o JOIN results r ON r.id=o.result_id JOIN products p ON p.id=r.product_id WHERE o.id=?',
+                (offer_id,),
+            ).fetchone()
             if not row:
                 raise KeyError('Offer not found')
-            reasons = json.loads(row['reasons'])
-            # Hard attribute conflicts cannot be overridden as exact products.
-            if status == 'accepted' and any('differs' in reason for reason in reasons):
-                raise ValueError('Conflicting product attributes: correct the input and crawl again')
+            if status == 'accepted':
+                from .matching import exact_match
+                if exact_match(json.loads(row['product']), json.loads(row['offer']))['status'] != 'accepted':
+                    raise ValueError('Подтвердить можно только точное совпадение товара и упаковки.')
+            db.execute('DELETE FROM price_advice WHERE run_id=? AND product_id=?',
+                       (row['run_id'], row['product_id']))
             db.execute('UPDATE offers SET match_status=?,reviewed_at=? WHERE id=?', (status, now(), offer_id))
 
     def save_advice(self, run_id, product_id, advice):
@@ -445,19 +455,24 @@ class Store:
                         # The operator's price replaces the read one everywhere; the read price stays visible.
                         data['observed_price'], data['price'] = data['price'], offer['manual_price']
                     entry['offers'].append(data)
-        from .matching import explain, match, summarize_matches
+        from .matching import exact_match, explain, summarize_matches
         result = []
         for entry in grouped.values():
-            for offer in entry['offers']:
-                # Explain with the current rules so older runs get accurate comments; the stored decision stays.
-                current = match(entry['product'], offer)
+            original = entry['offers']
+            entry['offers'] = []
+            for offer in original:
+                current = exact_match(entry['product'], offer)
+                if current['status'] != 'accepted':
+                    continue
+                entry['offers'].append(offer)
                 offer['comment'] = explain(entry['product'], offer, offer['match_status'], current['reasons'], offer['score'],
                                            reviewed=bool(offer.get('reviewed_at')), current_status=current['status'])
                 if offer.get('manual_price') is not None:
                     was, now_ = (f'{v:,.0f}'.replace(',', ' ') for v in (offer['observed_price'], offer['price']))
                     offer['comment'] += f' Цена исправлена вручную: было {was} сум, стало {now_} сум.'
             entry['estimate'] = estimate(entry['offers'], entry['product'].get('invoice_price'))
-            entry['advice'] = advice.get(entry['product']['id'])
+            entry['advice'] = (advice.get(entry['product']['id'])
+                               if len(original) == len(entry['offers']) and entry['estimate']['value'] is not None else None)
             entry['matching']=summarize_matches(entry['offers'],entry['sources'])
             result.append(entry)
         if branch:
@@ -478,8 +493,8 @@ class Store:
                 branch = json.loads(run['branch'])
                 branch.pop('prices')
                 run['branch'] = branch
-            candidate_rows=db.execute('''SELECT o.match_status,r.product_id,r.site
-                FROM offers o JOIN results r ON r.id=o.result_id WHERE r.run_id=?''',(run_id,)).fetchall()
+            candidate_rows=db.execute('''SELECT o.match_status,r.product_id,r.site,o.data AS offer,p.data AS product
+                FROM offers o JOIN results r ON r.id=o.result_id JOIN products p ON p.id=r.product_id WHERE r.run_id=?''',(run_id,)).fetchall()
             results=[dict(r) for r in db.execute('SELECT * FROM results WHERE run_id=? ORDER BY id',(run_id,))]
             active=None
             if run and run['active_product_id']:
@@ -487,7 +502,8 @@ class Store:
                 if p:active={'id':run['active_product_id'],'name':json.loads(p['data'])['name'],'site':run['active_site']}
             names={r['id']:json.loads(r['data'])['name'] for r in db.execute('''SELECT p.id,p.data FROM products p
                 WHERE p.id IN (SELECT product_id FROM results WHERE run_id=?)''',(run_id,))}
-        totals={'accepted':0,'rejected':0,'review':0,'total':len(candidate_rows)}
+        from .matching import exact_match
+        totals={'accepted':0,'rejected':0,'review':0,'total':0}
         matched=set(); reviews=set(); accepted_sites={}; source_stats={}
         source_names=json.loads(run['sites'] or '[]') if run else []
         for site in dict.fromkeys(source_names+[r['site'] for r in results]):
@@ -502,6 +518,9 @@ class Store:
             source['errors']+=r['status'] not in ('ok','no_results')
             per_result[r['product_id'],r['site']]={'accepted':0,'rejected':0,'review':0}
         for candidate in candidate_rows:
+            if exact_match(json.loads(candidate['product']), json.loads(candidate['offer']))['status'] != 'accepted':
+                continue
+            totals['total'] += 1
             status=candidate['match_status']
             if status in totals:totals[status]+=1
             source=source_stats[candidate['site']]

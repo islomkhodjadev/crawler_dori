@@ -12,6 +12,7 @@ from playwright.async_api import async_playwright
 from .challenge import settle, retry_after_seconds
 from .browser_config import launch_options
 from .logs import get
+from .matching import exact_match, identity_label, same_product_label
 from .page_state import classify_text, has_visible_price
 
 log = get('adapters')
@@ -139,74 +140,79 @@ async def agent_search_oson(agent_bus, product, use_ai=None):
         log.warning('agent shortcut failed or timed out for oson product_id=%s', product.get('id'))
         return [], {'status': 'error', 'error': 'agent fetch timed out or returned no HTML', 'observed_at': now()}
 
-    offers, html, final_url = fetched
-    if offers:
-        from .matching import match
+    async def pharmacy_prices(fetched_page):
+        offers, _, final_url = fetched_page
+        listing = exact_product_listing(product, offers, 'osonapteka.uz', ('/product/', '/products/', '/product-', '/ru/product/', '/uz/product/', '/medicine/'))
+        if not listing:
+            return None
+        product_url = listing['url']
+        region_ids = [int(x) for x in os.getenv('OSON_REGION_IDS', '25').split(',') if x.strip().isdigit()]
+        result = await agent_bus.fetch_oson_pharmacies(product_url, region_ids)
+        if not (result and same_product_page(product_url, result.get('url'))
+                and same_product_label(identity_label(listing['name'], listing.get('manufacturer')),
+                                   identity_label(result.get('product_name') or '', listing.get('manufacturer')))):
+            log.warning('Oson product identity unverified product_id=%s', product.get('id'))
+            return None
+        prices = parse_oson_pharmacies(result.get('data') or result.get('html') or '', listing['name'], product_url)
+        if prices:
+            for offer in prices:
+                apply_listing_identity(offer, listing)
+            return prices, {'status': 'ok', 'url': product_url, 'pages': 1,
+                            'extraction_method': 'agent_oson_pharmacy_page',
+                            'scope': f'Oson per-pharmacy prices (region {region_ids})'}
+        return None
 
-        candidates = [
-            (match(product, offer), offer) for offer in offers
-            if '/product' in (offer.get('url') or '') and 'search' not in offer['url']
-        ]
-        best = max(((decision, offer) for decision, offer in candidates if decision['status'] != 'rejected'),
-                   key=lambda item: (item[0]['status'] == 'accepted', item[0]['score']), default=None)
-        if best:
-            _, listing = best
-            product_url = listing['url']
-            region_ids = [int(x) for x in os.getenv('OSON_REGION_IDS', '25').split(',') if x.strip().isdigit()]
-            log.info('agent oson_pharmacies: fetching product page product_id=%s url=%s', product.get('id'), product_url)
-            ph_result = await agent_bus.fetch_oson_pharmacies(product_url, region_ids)
-            if ph_result:
-                ph_data = ph_result.get('data') or ph_result.get('html') or ''
-                ph_offers = parse_oson_pharmacies(ph_data, listing['name'], product_url)
-                if ph_offers:
-                    for offer in ph_offers:
-                        offer['manufacturer'] = listing.get('manufacturer', '')
-                    log.info('agent oson_pharmacies: parsed %d pharmacy offers product_id=%s', len(ph_offers), product.get('id'))
-                    return ph_offers, {'status': 'ok', 'url': product_url, 'pages': 1,
-                                       'extraction_method': 'agent_oson_pharmacy_page',
-                                       'scope': f'Oson per-pharmacy prices (region {region_ids})'}
-                log.warning('agent oson_pharmacies: no pharmacies parsed, falling back to search offers product_id=%s', product.get('id'))
-        return offers, {'status': 'ok', 'url': final_url, 'pages': 1,
-                        'extraction_method': 'agent_json_ld' if parse_oson_jsonld(html, final_url) else 'agent_visible_cards',
-                        'scope': 'Oson prices via Chrome extension agent (user browser)'}
+    verified = await pharmacy_prices(fetched)
+    if verified:
+        return verified
 
-    # Primary query returned a page but no offers — try AI-generated variants.
     if use_ai or os.getenv('OPENAI_API_KEY'):
         from .ai import search_term_variants
         variants = await search_term_variants(product, site='oson')
+        seen = {primary_query.casefold()}
         for variant in variants:
-            if variant.lower() == primary_query.lower():
+            key = variant.casefold()
+            if key in seen:
                 continue
-            log.info('agent shortcut oson fallback product_id=%s variant=%r', product.get('id'), variant)
-            fetched2 = await _fetch_oson_page(agent_bus, variant)
-            if fetched2 and fetched2[0]:
-                v_offers, v_html, v_url = fetched2
-                return v_offers, {'status': 'ok', 'url': v_url, 'pages': 1,
-                                  'extraction_method': 'agent_json_ld',
-                                  'scope': f'Oson via agent (AI variant: {variant})'}
+            seen.add(key)
+            alternative = await _fetch_oson_page(agent_bus, variant)
+            if alternative and (verified := await pharmacy_prices(alternative)):
+                return verified
 
-    body_text = BeautifulSoup(html, 'html.parser').get_text(' ', strip=True)
-    state = classify_text(body_text)
-    if state == 'no_results':
-        return [], {'status': 'no_results', 'url': final_url, 'pages': 1}
-    log.warning('agent shortcut returned page but no offers parsed site=oson state=%s', state)
-    return [], {'status': 'no_results', 'url': final_url, 'pages': 1}
+    _, html, final_url = fetched
+    state = classify_text(BeautifulSoup(html, 'html.parser').get_text(' ', strip=True))
+    log.info('Oson exact listing not verified product_id=%s page_state=%s', product.get('id'), state)
+    return [], {'status': 'no_results', 'url': final_url, 'pages': 1,
+                'warning': 'Точное совпадение товара и цены не подтверждено'}
 
 
-def _name_similarity(a, b):
-    """Return fraction of words in a that appear in b (case-insensitive)."""
-    wa = set(re.findall(r'\w+', a.lower()))
-    wb = set(re.findall(r'\w+', b.lower()))
-    if not wa:
-        return 0.0
-    return len(wa & wb) / len(wa)
+def exact_product_listing(product, offers, host, paths):
+    for offer in offers:
+        url = urlparse(offer.get('url') or '')
+        identity = {**offer, 'extraction': None} if offer.get('extraction') == 'visible_card_requires_review' else offer
+        if (url.scheme == 'https' and url.hostname == host and url.path.startswith(paths)
+                and exact_match(product, identity)['status'] == 'accepted'):
+            return offer
+    return None
+
+
+def same_product_page(expected, actual):
+    if not actual:
+        return False
+    wanted, landed = urlparse(expected), urlparse(actual)
+    return (wanted.scheme, wanted.netloc, wanted.path.rstrip('/')) == (
+        landed.scheme, landed.netloc, landed.path.rstrip('/'))
+
+
+def apply_listing_identity(offer, listing):
+    offer.update(manufacturer=listing.get('manufacturer', ''), site_id=listing.get('site_id', ''),
+                 barcode=listing.get('barcode', ''), identity_verified=True)
 
 
 def parse_arzon_pharmacies(html, product_name, product_url):
     """Parse the /checkout/pharmacies SSR page and return one offer per pharmacy.
 
-    If the cart had only one item (the target product), every price line is for it.
-    If somehow multiple items remain, we match by product name proximity.
+    A unit price is recorded only when its preceding cart label matches the selected product.
     """
     from .local_area import map_link_coordinates, pharmacy_coordinates
 
@@ -247,32 +253,17 @@ def parse_arzon_pharmacies(html, product_name, product_url):
                     continue
                 pharmacy_name = l
                 break
-            # Scan forward to find price for the target product.
-            # Pattern: product name line → "1 шт × N сўм" on next line.
-            # Fall back to first price if no name match found.
+            # A pharmacy price must follow the exact cart item label.
             product_price = None
-            last_name_match_score = 0.0
-            pending_name_score = 0.0
-            for j in range(i + 1, min(i + 40, len(lines))):
-                l = lines[j]
-                if l in ('Забронировать', 'Выбрать', 'Полная информация'):
+            for j in range(i + 1, min(i + 40, len(lines) - 1)):
+                line = lines[j]
+                if line.startswith('Адрес:') or line in ('Забронировать', 'Выбрать', 'Полная информация'):
                     break
-                # Detect a product name line (not a price/metadata)
-                if '×' not in l and not re.search(r'\d{2}:\d{2}|Нет в наличии|В наличии|Доступно', l):
-                    score = _name_similarity(product_name, l)
-                    if score > 0.3:
-                        pending_name_score = score
-                # Price line: "1 шт × 12 700 сўм"
-                if '×' in l and re.search(r'\d[\d\s]+\s*сўм', l):
-                    val = price_value(l)
-                    if val and val > 0:
-                        # Prefer price that follows a matching product name
-                        if pending_name_score > last_name_match_score:
-                            product_price = val
-                            last_name_match_score = pending_name_score
-                        elif product_price is None:
-                            product_price = val  # first price as fallback
-                    pending_name_score = 0.0
+                price_line = lines[j + 1]
+                if same_product_label(product_name, line) and re.match(r'^\s*1\s*шт\.?\s*×', price_line):
+                    product_price = price_value(price_line)
+                    if product_price:
+                        break
             if pharmacy_name and product_price:
                 lat, lng = address_points.get(addr, (None, None))
                 offers.append(dict(
@@ -306,14 +297,10 @@ async def agent_search_arzon(agent_bus, product, region_id=2114):
     if not search_offers:
         return [], {'status': 'no_results', 'url': search_url, 'pages': 1}
 
-    # Pick the best-matching offer: prefer one whose form/measures match our product
-    from .matching import match as _match
-    scored = sorted(search_offers, key=lambda o: _match(product, o)['score'], reverse=True)
-    # Among top scorers, prefer non-rejected ones
-    best = next((o for o in scored if _match(product, o)['status'] != 'rejected'), scored[0])
-    product_url = best['url']
-    product_name = best['name']
-    log.info('agent arzon_pharmacies: got product_url=%s name=%r score=%.2f', product_url, product_name, _match(product, best)['score'])
+    best = exact_product_listing(product, search_offers, 'arzonapteka.uz', ('/ru/products/', '/uz/products/', '/products/'))
+    if not best:
+        return [], {'status': 'no_results', 'url': search_url, 'warning': 'Точное совпадение не найдено'}
+    product_url, product_name = best['url'], best['name']
 
     # Now ask the extension to do the multi-step pharmacy fetch
     result = await agent_bus.fetch_arzon_pharmacies(product_url, region_id)
@@ -324,13 +311,11 @@ async def agent_search_arzon(agent_bus, product, region_id=2114):
     offers = parse_arzon_pharmacies(result['html'], product_name, product_url)
     if not offers:
         log.warning('agent arzon_pharmacies: no pharmacies parsed product_id=%s url=%s', product.get('id'), result.get('url'))
-        # Fall back to the search result prices (site-wide minimum)
-        return search_offers, {'status': 'ok', 'url': search_url, 'pages': 1,
-                               'extraction_method': 'agent_search_fallback',
-                               'scope': 'ArzonApteka minimum prices (pharmacy page parse failed)'}
+        return [], {'status': 'no_results', 'url': product_url,
+                    'warning': 'Цена для точной позиции не подтверждена'}
 
     for offer in offers:
-        offer['manufacturer'] = best.get('manufacturer', '')
+        apply_listing_identity(offer, best)
     log.info('agent arzon_pharmacies: parsed %d pharmacy offers product_id=%s', len(offers), product.get('id'))
     return offers, {'status': 'ok', 'url': result.get('url', product_url), 'pages': 1,
                     'extraction_method': 'agent_pharmacy_page',
@@ -432,7 +417,7 @@ def parse_oson_jsonld(html, page_url):
                     url = urljoin(page_url, offer.get('url') or node.get('url') or page_url)
                     if urlparse(url).hostname != 'osonapteka.uz':
                         continue
-                    maker = node.get('manufacturer') or node.get('brand') or ''
+                    maker = node.get('manufacturer') or ''
                     if isinstance(maker, dict):
                         maker = maker.get('name', '')
                     found.append(dict(site='oson', site_id=str(node.get('sku', '')),

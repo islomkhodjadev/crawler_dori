@@ -22,7 +22,7 @@ OSON='''<main><h1>Результаты поиска</h1><p>Показано ле
 def test_oson_visible_cards_pair_names_and_prices():
     offers=parse_oson_cards(OSON,'https://osonapteka.uz/search?q=авантовир')
     assert len(offers)==2
-    assert offers[0]['name']=='Авантовир таб. п/о 25мг №30'
+    assert offers[0]['name'].startswith('Авантовир таб. п/о 25мг №30 (Avantika Medex')
     assert offers[0]['price']==243180
     assert offers[1]['price']==385000
     assert 'Авантовир' not in offers[1]['name']
